@@ -1,0 +1,16 @@
+{
+  "nouns": [
+    "mountain", "river", "garden", "bicycle", "lantern", "ocean", "forest",
+    "bridge", "castle", "violin", "compass", "harbor", "meadow", "sculpture",
+    "telescope", "library", "orchard", "waterfall", "canyon", "island",
+    "kitchen", "notebook", "umbrella", "festival", "planet", "engine",
+    "blanket", "mirror", "candle", "journey"
+  ],
+  "adjectives": [
+    "gentle", "vibrant", "curious", "peaceful", "brilliant", "graceful",
+    "cheerful", "sturdy", "elegant", "playful", "radiant", "cozy",
+    "adventurous", "calm", "generous", "lively", "mysterious", "polished",
+    "friendly", "swift", "thoughtful", "bright", "sincere", "modern",
+    "delicate", "spacious", "vivid", "reliable", "charming", "serene"
+  ]
+}
