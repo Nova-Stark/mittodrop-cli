@@ -20,6 +20,9 @@ func ResolveLinks(port int) []NetworkLink {
 
 	for _, nw := range networks {
 		for _, item := range nw.IPtems {
+			if item.IsLinkLocal {
+				continue
+			}
 			ipStr := item.IP.String()
 			var url string
 

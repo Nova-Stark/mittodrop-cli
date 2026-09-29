@@ -53,6 +53,9 @@ func TestResolveLinks(t *testing.T) {
 				t.Errorf("IPv4 link %q malformed", l.URL)
 			}
 		}
+		if l.IsLinkLocal {
+			t.Errorf("link-local link %q should be excluded from linkshare", l.URL)
+		}
 		if !strings.Contains(l.URL, ":49201/") {
 			t.Errorf("expected port 49201 in %q", l.URL)
 		}

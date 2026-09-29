@@ -52,20 +52,42 @@ func NewReceiver(cfg ReceiverConfig) (*Receiver, error) {
 		return nil, fmt.Errorf("linkshare: create save dir %q: %w", cfg.SaveDir, err)
 	}
 
-	port := cfg.Port
-	if port == 0 {
-		var err error
-		port, err = utils.FindAvailablePort("127.0.0.1")
+	var ln net.Listener
+	var err error
+
+	if cfg.Port > 0 {
+		ln, err = net.Listen("tcp", fmt.Sprintf(":%d", cfg.Port))
 		if err != nil {
-			return nil, fmt.Errorf("linkshare: auto-detect port: %w", err)
+			return nil, fmt.Errorf("linkshare: listen on port %d: %w", cfg.Port, err)
+		}
+	} else {
+		// Try candidate port first
+		port, portErr := utils.FindAvailablePort("127.0.0.1")
+		if portErr == nil {
+			ln, err = net.Listen("tcp", fmt.Sprintf(":%d", port))
+		}
+		// If candidate failed or was busy, fall back to ephemeral port
+		if ln == nil {
+			ln, err = net.Listen("tcp", ":0")
+			if err != nil {
+				return nil, fmt.Errorf("linkshare: bind fallback port: %w", err)
+			}
 		}
 	}
 
+	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		ln.Close()
+		return nil, fmt.Errorf("linkshare: unable to cast listener to TCPAddr")
+	}
+	actualPort := tcpAddr.Port
+
 	r := &Receiver{
-		cfg:     cfg,
-		port:    port,
-		links:   ResolveLinks(port),
-		readyCh: make(chan struct{}),
+		cfg:      cfg,
+		port:     actualPort,
+		listener: ln,
+		links:    ResolveLinks(actualPort),
+		readyCh:  make(chan struct{}),
 	}
 
 	mux := http.NewServeMux()
@@ -99,14 +121,8 @@ func (r *Receiver) Ready() <-chan struct{} {
 
 // Start begins dual-stack listening and serves HTTP requests until ctx cancel.
 func (r *Receiver) Start(ctx context.Context) error {
-	addr := fmt.Sprintf(":%d", r.port)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("linkshare: listen on %s: %w", addr, err)
-	}
-
 	r.mu.Lock()
-	r.listener = ln
+	ln := r.listener
 	close(r.readyCh)
 	r.mu.Unlock()
 
