@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mittodrop — Send Files</title>
+  <style>
+    {{ .Styles }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo-group">
+        <span class="logo-badge">MITTO</span>
+        <h1 class="title">Drop</h1>
+      </div>
+      <button id="theme-toggle" class="theme-toggle" aria-label="Toggle Theme" title="Toggle Light/Dark Theme">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="5"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line>
+          <line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line>
+          <line x1="21" y1="12" x2="23" y2="12"></line>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+        </svg>
+      </button>
+    </div>
+
+    <div class="peer-info">
+      <span class="peer-label">Sending to Receiver</span>
+      <span class="peer-name">{{ .DeviceName }}</span>
+    </div>
+
+    <!-- Dropzone Area -->
+    <div id="dropzone" class="dropzone">
+      <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="17 8 12 3 7 8"></polyline>
+        <line x1="12" y1="3" x2="12" y2="15"></line>
+      </svg>
+      <div class="drop-title">Drop files here or click to browse</div>
+      <div class="drop-subtitle">Single or multiple files supported</div>
+      <input type="file" id="file-input" multiple>
+    </div>
+
+    <!-- Progress Card -->
+    <div id="progress-box" class="progress-box">
+      <div class="progress-header">
+        <span>Uploading...</span>
+        <span id="progress-percent">0%</span>
+      </div>
+      <div class="progress-track">
+        <div id="progress-bar" class="progress-bar"></div>
+      </div>
+      <div class="progress-stats">
+        <span id="progress-bytes">0 B / 0 B</span>
+        <span id="progress-speed">-- MB/s</span>
+      </div>
+    </div>
+
+    <!-- Success Card -->
+    <div id="success-box" class="success-box">
+      <svg class="success-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+      </svg>
+      <div class="success-title">Transfer Complete!</div>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">Files safely received</p>
+      
+      <ul id="file-list" class="file-list"></ul>
+
+      <button id="reset-btn" class="btn-reset">Send More Files</button>
+    </div>
+  </div>
+
+  <script>
+    {{ .Script }}
+  </script>
+</body>
+</html>

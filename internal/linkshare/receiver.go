@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"mittodrop/internal/sharepage"
 	"mittodrop/internal/utils"
 )
 
@@ -133,16 +134,9 @@ func (r *Receiver) handleRoot(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
-	// Placeholder landing page until templ + htmx integration
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<!DOCTYPE html>
-<html>
-<head><title>Mittodrop Link Share</title></head>
-<body>
-<h2>Mittodrop Ready</h2>
-<p>Receiver: <strong>` + r.cfg.DeviceName + `</strong></p>
-<p>Upload files via POST to <code>/upload</code></p>
-</body>
-</html>`))
+	if err := sharepage.Render(w, r.cfg.DeviceName); err != nil {
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
 }

@@ -39,9 +39,27 @@ func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Terminal success log
+	for _, res := range results {
+		fmt.Printf("[✓] Received: %s (%s)\n", res.Filename, formatByteSize(res.Bytes))
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(results)
+}
+
+func formatByteSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 func (r *Receiver) saveMultipartStream(req *http.Request) ([]UploadResult, error) {

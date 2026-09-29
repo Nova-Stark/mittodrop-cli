@@ -78,6 +78,20 @@ func TestReceiver_HandshakeAndUpload(t *testing.T) {
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", rcv.Port())
 
+	// 0. Test Webpage Render (Browser Persona GET /)
+	rootResp, err := http.Get(baseURL + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	defer rootResp.Body.Close()
+	if rootResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / status %d, want 200", rootResp.StatusCode)
+	}
+	rootBody, _ := io.ReadAll(rootResp.Body)
+	if !strings.Contains(string(rootBody), "test-dev-name") || !strings.Contains(string(rootBody), "dropzone") {
+		t.Errorf("GET / missing expected UI contents")
+	}
+
 	// 1. Test Handshake
 	resp, err := http.Get(baseURL + "/handshake")
 	if err != nil {
