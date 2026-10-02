@@ -147,14 +147,3 @@ func SendToDevice(ctx context.Context, dev shout.DiscoveredDevice, codephrase st
 
 	return SendFile(ctx, c, reader, onProgress)
 }
-
-// ReceiveFromDevice connects to a discovered shout peer and downloads a file
-func ReceiveFromDevice(ctx context.Context, dev shout.DiscoveredDevice, codephrase string, localID utils.PeerIdentity, saveDir string, onProgress ProgressCallback) (*transfer.FileMetadata, error) {
-	c, err := ConnectToDevice(ctx, dev, codephrase, localID)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-
-	return ReceiveFile(ctx, c, saveDir, onProgress)
-}
