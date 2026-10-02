@@ -108,3 +108,45 @@ func TestReceiver_IPv6PriorityPolicy(t *testing.T) {
 		t.Errorf("expected IPv6 preserved over subsequent IPv4, got %+v", devs[0])
 	}
 }
+
+func TestReceiver_MultipleInstancesSameHost(t *testing.T) {
+	// Instance 1 receiver with SelfSessionID
+	r, err := NewReceiver(ReceiverConfig{
+		SelfDeviceID:  "my-pc-uuid",
+		SelfSessionID: "session-tab-1",
+	})
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+
+	// Instance 1 self-beacon: must be ignored
+	r.handleMessage(&ShoutMessage{
+		DeviceID:     "my-pc-uuid",
+		DeviceName:   "my-pc",
+		SessionID:    "session-tab-1",
+		InterfaceIP:  "192.168.1.50",
+		TransferPort: 42201,
+	})
+
+	if len(r.Devices()) != 0 {
+		t.Fatalf("expected self-beacon to be ignored, got %d devices", len(r.Devices()))
+	}
+
+	// Instance 2 on SAME host (same DeviceID, different SessionID): must be discovered
+	r.handleMessage(&ShoutMessage{
+		DeviceID:     "my-pc-uuid",
+		DeviceName:   "my-pc-tab2",
+		SessionID:    "session-tab-2",
+		InterfaceIP:  "192.168.1.50",
+		TransferPort: 42202,
+	})
+
+	devs := r.Devices()
+	if len(devs) != 1 {
+		t.Fatalf("expected 1 discovered instance from same host, got %d", len(devs))
+	}
+	if devs[0].SessionID != "session-tab-2" || devs[0].TransferPort != 42202 {
+		t.Fatalf("expected tab-2 instance (session-tab-2, port 42202), got %+v", devs[0])
+	}
+}
+

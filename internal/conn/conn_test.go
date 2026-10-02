@@ -98,6 +98,13 @@ func TestOrchestrator_Manual(t *testing.T) {
 		t.Fatalf("key mismatch: %x vs %x", sConn.SessionKey, rConn.SessionKey)
 	}
 
+	if sConn.Remote.DeviceID == "" || rConn.Remote.DeviceID == "" {
+		t.Fatalf("remote identity missing: sender.Remote=%+v, recv.Remote=%+v", sConn.Remote, rConn.Remote)
+	}
+	if sConn.Remote.DeviceID != rConn.Local.DeviceID || rConn.Remote.DeviceID != sConn.Local.DeviceID {
+		t.Fatalf("identity exchange mismatch: sender.Remote=%+v, recv.Local=%+v", sConn.Remote, rConn.Local)
+	}
+
 	// Echo test
 	payload := []byte("hello manual orchestrator stream!")
 	if _, err := sConn.Conn.Write(payload); err != nil {
@@ -288,7 +295,7 @@ func TestProbeCandidates_DirectSuccess(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		acceptedConn, _, acceptErr = ln.Accept(ctx)
+		acceptedConn, _, _, acceptErr = ln.Accept(ctx)
 	}()
 
 	directConn, pathType, err := conn.ProbeCandidates(ctx, candidates, codephrase)

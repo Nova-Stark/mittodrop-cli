@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"mittodrop/internal/manual"
+	"mittodrop/internal/utils"
 )
 
 func TestManual_DirectConnect(t *testing.T) {
@@ -30,21 +31,33 @@ func TestManual_DirectConnect(t *testing.T) {
 
 	targetAddr := fmt.Sprintf("127.0.0.1:%d", ln.Port())
 
+	senderID := utils.PeerIdentity{
+		DeviceID:   "device-sender-111",
+		DeviceName: "SenderManualTest",
+		SessionID:  "session-sender-111",
+	}
+	receiverID := utils.PeerIdentity{
+		DeviceID:   "device-receiver-222",
+		DeviceName: "ReceiverManualTest",
+		SessionID:  "session-receiver-222",
+	}
+
 	var senderConn, receiverConn net.Conn
 	var senderKey, receiverKey [32]byte
+	var senderRemote, receiverRemote utils.PeerIdentity
 	var senderErr, receiverErr error
 	var wg sync.WaitGroup
 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		senderConn, senderKey, senderErr = ln.Accept(ctx)
+		senderConn, senderKey, senderRemote, senderErr = ln.Accept(ctx, senderID)
 	}()
 
 	go func() {
 		defer wg.Done()
 		time.Sleep(30 * time.Millisecond)
-		receiverConn, receiverKey, receiverErr = manual.Dial(ctx, targetAddr, codephrase)
+		receiverConn, receiverKey, receiverRemote, receiverErr = manual.Dial(ctx, targetAddr, codephrase, receiverID)
 	}()
 
 	wg.Wait()
@@ -62,6 +75,14 @@ func TestManual_DirectConnect(t *testing.T) {
 	// Verify derived keys match
 	if !bytes.Equal(senderKey[:], receiverKey[:]) {
 		t.Fatalf("PAKE session key mismatch: %x vs %x", senderKey, receiverKey)
+	}
+
+	// Verify identity exchange
+	if senderRemote.DeviceID != receiverID.DeviceID || senderRemote.SessionID != receiverID.SessionID {
+		t.Fatalf("sender received wrong remote identity: %+v, want %+v", senderRemote, receiverID)
+	}
+	if receiverRemote.DeviceID != senderID.DeviceID || receiverRemote.SessionID != senderID.SessionID {
+		t.Fatalf("receiver received wrong remote identity: %+v, want %+v", receiverRemote, senderID)
 	}
 
 	// Verify bidirectional raw data transmission
@@ -100,7 +121,7 @@ func TestManual_BadCodephrase(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		conn, _, _ := ln.Accept(ctx)
+		conn, _, _, _ := ln.Accept(ctx)
 		if conn != nil {
 			conn.Close()
 		}
@@ -110,7 +131,7 @@ func TestManual_BadCodephrase(t *testing.T) {
 		defer wg.Done()
 		time.Sleep(30 * time.Millisecond)
 		var conn net.Conn
-		conn, _, dialErr = manual.Dial(ctx, targetAddr, wrongPhrase)
+		conn, _, _, dialErr = manual.Dial(ctx, targetAddr, wrongPhrase)
 		if conn != nil {
 			conn.Close()
 		}
@@ -150,7 +171,7 @@ func TestManual_ContextCancel(t *testing.T) {
 	defer ln.Close()
 
 	cancel() // cancel immediately
-	_, _, err = ln.Accept(ctx)
+	_, _, _, err = ln.Accept(ctx)
 	if err == nil {
 		t.Fatal("expected context canceled error, got nil")
 	}

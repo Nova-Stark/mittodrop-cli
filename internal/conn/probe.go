@@ -10,6 +10,7 @@ import (
 
 	"mittodrop/internal/manual"
 	"mittodrop/internal/relay"
+	"mittodrop/internal/utils"
 )
 
 // ProbeTimeout is the per-candidate connection timeout.
@@ -18,14 +19,14 @@ const ProbeTimeout = 1500 * time.Millisecond
 // ProbeCandidates tries dialing the sender's candidate endpoints in priority order:
 // IPv6 direct -> Local LAN -> UPnP public port.
 // Returns the first successfully authenticated direct connection and its path type.
-func ProbeCandidates(ctx context.Context, candidates []manual.Endpoint, codephrase string) (net.Conn, string, error) {
+func ProbeCandidates(ctx context.Context, candidates []manual.Endpoint, codephrase string, local ...utils.PeerIdentity) (net.Conn, string, error) {
 	if len(candidates) == 0 {
 		return nil, "", errors.New("conn: no candidates to probe")
 	}
 
 	for _, ep := range candidates {
 		probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
-		conn, _, err := manual.Dial(probeCtx, ep.Address, codephrase)
+		conn, _, _, err := manual.Dial(probeCtx, ep.Address, codephrase, local...)
 		cancel()
 
 		if err == nil {

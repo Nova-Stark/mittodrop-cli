@@ -3,6 +3,7 @@ package manual
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -105,8 +106,8 @@ func (l *Listener) Endpoints() []Endpoint {
 }
 
 // Accept waits for a receiver connection and executes mutual SPAKE2 PAKE authentication.
-// Returns the authenticated net.Conn and the derived 32-byte session key.
-func (l *Listener) Accept(ctx context.Context) (net.Conn, [32]byte, error) {
+// Returns the authenticated net.Conn, derived 32-byte session key, and verified remote identity.
+func (l *Listener) Accept(ctx context.Context, local ...utils.PeerIdentity) (net.Conn, [32]byte, utils.PeerIdentity, error) {
 	type acceptResult struct {
 		conn net.Conn
 		err  error
@@ -118,24 +119,30 @@ func (l *Listener) Accept(ctx context.Context) (net.Conn, [32]byte, error) {
 		ch <- acceptResult{conn: conn, err: err}
 	}()
 
+	var localID utils.PeerIdentity
+	if len(local) > 0 {
+		localID = local[0]
+	}
+	_ = localID.EnsureValid("")
+
 	select {
 	case <-ctx.Done():
 		l.Close()
-		return nil, [32]byte{}, ctx.Err()
+		return nil, [32]byte{}, utils.PeerIdentity{}, ctx.Err()
 	case res := <-ch:
 		if res.err != nil {
-			return nil, [32]byte{}, fmt.Errorf("manual: accept: %w", res.err)
+			return nil, [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("manual: accept: %w", res.err)
 		}
 		conn := res.conn
 
 		// Perform PAKE handshake with receiver
-		key, err := l.authenticateSender(conn)
+		key, remoteID, err := l.authenticateSender(conn, localID)
 		if err != nil {
 			conn.Close()
-			return nil, [32]byte{}, fmt.Errorf("manual: authentication failed: %w", err)
+			return nil, [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("manual: authentication failed: %w", err)
 		}
 
-		return conn, key, nil
+		return conn, key, remoteID, nil
 	}
 }
 
@@ -159,56 +166,75 @@ func (l *Listener) Close() error {
 	return err
 }
 
-func (l *Listener) authenticateSender(conn net.Conn) ([32]byte, error) {
+func (l *Listener) authenticateSender(conn net.Conn, localID utils.PeerIdentity) ([32]byte, utils.PeerIdentity, error) {
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	defer conn.SetDeadline(time.Time{})
 
 	// 1. Sender is Initiator
 	initiator, initMsg, err := pake.NewInitiator(l.codephrase)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("init initiator: %w", err)
+		return [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("init initiator: %w", err)
 	}
 
 	if err := relay.WriteFrame(conn, initMsg); err != nil {
-		return [32]byte{}, fmt.Errorf("send init msg: %w", err)
+		return [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("send init msg: %w", err)
 	}
 
 	// 2. Read responder curve point
 	respMsg, err := relay.ReadFrame(conn)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("read resp msg: %w", err)
+		return [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("read resp msg: %w", err)
 	}
 
 	// 3. Derive 32-byte session key
 	rawKey, err := initiator.Finish(respMsg)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("derive session key: %w", err)
+		return [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("derive session key: %w", err)
 	}
 
 	var sessionKey [32]byte
 	copy(sessionKey[:], rawKey)
 
-	// 4. Send encrypted challenge
-	challenge, err := relay.Encrypt(sessionKey[:], []byte("mittodrop-auth"))
+	// 4. Send encrypted challenge carrying local identity
+	helloBytes, err := json.Marshal(utils.PeerHello{
+		Magic:    "mittodrop-auth",
+		Identity: localID,
+	})
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("encrypt challenge: %w", err)
+		return [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("marshal challenge: %w", err)
+	}
+
+	challenge, err := relay.Encrypt(sessionKey[:], helloBytes)
+	if err != nil {
+		return [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("encrypt challenge: %w", err)
 	}
 	if err := relay.WriteFrame(conn, challenge); err != nil {
-		return [32]byte{}, fmt.Errorf("send challenge: %w", err)
+		return [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("send challenge: %w", err)
 	}
 
 	// 5. Receive and verify ack from receiver
 	ackEnc, err := relay.ReadFrame(conn)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("read challenge ack: %w", err)
+		return [32]byte{}, utils.PeerIdentity{}, fmt.Errorf("read challenge ack: %w", err)
 	}
 
 	ackBytes, err := relay.Decrypt(sessionKey[:], ackEnc)
-	if err != nil || !bytes.Equal(ackBytes, []byte("mittodrop-auth-ack")) {
-		return [32]byte{}, errors.New("bad codephrase or authentication mismatch")
+	if err != nil {
+		return [32]byte{}, utils.PeerIdentity{}, errors.New("bad codephrase or authentication mismatch")
 	}
 
-	return sessionKey, nil
+	var remoteID utils.PeerIdentity
+	if bytes.Equal(ackBytes, []byte("mittodrop-auth-ack")) {
+		// Legacy string ack compatibility
+	} else {
+		var ackHello utils.PeerHello
+		if err := json.Unmarshal(ackBytes, &ackHello); err != nil || ackHello.Magic != "mittodrop-auth-ack" {
+			return [32]byte{}, utils.PeerIdentity{}, errors.New("manual: invalid challenge ack")
+		}
+		remoteID = ackHello.Identity
+	}
+
+	return sessionKey, remoteID, nil
 }
 
 func (l *Listener) gatherLocalEndpoints() {

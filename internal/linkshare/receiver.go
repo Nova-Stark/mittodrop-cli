@@ -15,7 +15,8 @@ import (
 
 // ReceiverConfig configures HTTP link sharing receiver.
 type ReceiverConfig struct {
-	DeviceID   string
+	Identity   utils.PeerIdentity
+	DeviceID   string // for backwards compatibility
 	DeviceName string
 	SessionID  string
 	SaveDir    string
@@ -35,6 +36,27 @@ type Receiver struct {
 
 // NewReceiver validates config, ensures save directory exists, and prepares receiver.
 func NewReceiver(cfg ReceiverConfig) (*Receiver, error) {
+	if cfg.Identity.DeviceID != "" {
+		if cfg.DeviceID == "" {
+			cfg.DeviceID = cfg.Identity.DeviceID
+		}
+		if cfg.DeviceName == "" {
+			cfg.DeviceName = cfg.Identity.DeviceName
+		}
+		if cfg.SessionID == "" {
+			cfg.SessionID = cfg.Identity.SessionID
+		}
+	} else if cfg.DeviceID != "" {
+		cfg.Identity.DeviceID = cfg.DeviceID
+		cfg.Identity.DeviceName = cfg.DeviceName
+		cfg.Identity.SessionID = cfg.SessionID
+	}
+
+	_ = cfg.Identity.EnsureValid("")
+	cfg.DeviceID = cfg.Identity.DeviceID
+	cfg.DeviceName = cfg.Identity.DeviceName
+	cfg.SessionID = cfg.Identity.SessionID
+
 	if cfg.DeviceID == "" {
 		return nil, fmt.Errorf("linkshare: device_id is required")
 	}

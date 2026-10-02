@@ -4,6 +4,7 @@ import (
 	"net"
 
 	"mittodrop/internal/manual"
+	"mittodrop/internal/utils"
 	"tailscale.com/tailcfg"
 )
 
@@ -34,13 +35,16 @@ type Config struct {
 	TargetAddr    string              // Manual target IP:port (required for ModeManual receiver)
 	PreferredPort int                 // Preferred local TCP listening port (0 for auto)
 	DERPRegion    *tailcfg.DERPRegion // Optional DERP region override (used for testing or self-hosted DERP)
+	Identity      utils.PeerIdentity  // Local peer identity
 }
 
 // Connection represents an established, authenticated, encrypted transport stream.
 type Connection struct {
-	Conn       net.Conn // Underlying network connection
-	SessionKey [32]byte // 256-bit symmetric key derived from SPAKE2 PAKE
-	PathType   string   // Transport path: "direct-ipv6", "direct-lan", "direct-upnp", "tunnel-p2p", "tunnel-derp", "relay"
+	Conn       net.Conn           // Underlying network connection
+	SessionKey [32]byte           // 256-bit symmetric key derived from SPAKE2 PAKE
+	PathType   string             // Transport path: "direct-ipv6", "direct-lan", "direct-upnp", "tunnel-p2p", "tunnel-derp", "relay", "manual"
+	Local      utils.PeerIdentity // Local peer identity (DeviceID, DeviceName, SessionID)
+	Remote     utils.PeerIdentity // Remote authenticated peer identity (DeviceID, DeviceName, SessionID)
 }
 
 // Close closes the underlying connection.

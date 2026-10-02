@@ -23,7 +23,8 @@ type DiscoveredDevice struct {
 }
 
 type ReceiverConfig struct {
-	SelfDeviceID string
+	SelfDeviceID  string
+	SelfSessionID string
 }
 
 type Receiver struct {
@@ -43,10 +44,19 @@ func NewReceiver(cfg ReceiverConfig) (*Receiver, error) {
 	}, nil
 }
 
-// Devices returns a copy of currently discovered devices slice.
+// Devices returns a copy of currently discovered devices slice, pruning entries older than 10 seconds.
 func (r *Receiver) Devices() []DiscoveredDevice {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	active := r.devices[:0]
+	for _, dev := range r.devices {
+		if now.Sub(dev.LastSeen) <= 10*time.Second {
+			active = append(active, dev)
+		}
+	}
+	r.devices = active
 
 	res := make([]DiscoveredDevice, len(r.devices))
 	copy(res, r.devices)
@@ -132,10 +142,12 @@ func (r *Receiver) listenLoop(ctx context.Context, conn *net.UDPConn, wg *sync.W
 	}
 }
 
-// handleMessage updates the slice with one entry per device, enforcing IPv6 priority.
+// handleMessage updates the slice with one entry per session, enforcing IPv6 priority.
 func (r *Receiver) handleMessage(msg *ShoutMessage) {
-	// Filter out own beacons
-	if msg.DeviceID == r.cfg.SelfDeviceID {
+	// Filter out own beacons: prefer SelfSessionID if configured, else SelfDeviceID
+	if r.cfg.SelfSessionID != "" && msg.SessionID == r.cfg.SelfSessionID {
+		return
+	} else if r.cfg.SelfSessionID == "" && msg.DeviceID == r.cfg.SelfDeviceID {
 		return
 	}
 
@@ -152,7 +164,8 @@ func (r *Receiver) handleMessage(msg *ShoutMessage) {
 
 	idx := -1
 	for i := range r.devices {
-		if r.devices[i].DeviceID == msg.DeviceID {
+		// Identify by SessionID so multiple instances on same host are distinguished
+		if r.devices[i].SessionID == msg.SessionID {
 			idx = i
 			break
 		}

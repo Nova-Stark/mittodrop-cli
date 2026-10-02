@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"mittodrop/internal/utils"
 )
 
 const DefaultConnectTimeout = 5 * time.Second
@@ -16,15 +18,18 @@ const DefaultConnectTimeout = 5 * time.Second
 // ClientConfig holds settings for dialing linkshare receiver.
 type ClientConfig struct {
 	Timeout          time.Duration
+	Identity         utils.PeerIdentity
 	SenderDeviceID   string
 	SenderDeviceName string
+	SenderSessionID  string
 }
 
 // PeerSession represents verified connection established with a linkshare receiver.
 type PeerSession struct {
-	BaseURL     string            `json:"base_url"`
-	Receiver    HandshakeResponse `json:"receiver"`
-	ConnectedAt time.Time         `json:"connected_at"`
+	BaseURL     string             `json:"base_url"`
+	Receiver    HandshakeResponse  `json:"receiver"`
+	Remote      utils.PeerIdentity `json:"remote"`
+	ConnectedAt time.Time          `json:"connected_at"`
 }
 
 // NormalizeURL ensures URL has http scheme, valid host/port, and no trailing slash.
@@ -80,11 +85,27 @@ func Connect(ctx context.Context, rawURL string, cfg ClientConfig) (*PeerSession
 	}
 
 	req.Header.Set("Accept", "application/json")
-	if cfg.SenderDeviceID != "" {
-		req.Header.Set("X-Mittodrop-Sender-ID", cfg.SenderDeviceID)
+	senderID := cfg.SenderDeviceID
+	senderName := cfg.SenderDeviceName
+	senderSession := cfg.SenderSessionID
+	if cfg.Identity.DeviceID != "" {
+		senderID = cfg.Identity.DeviceID
 	}
-	if cfg.SenderDeviceName != "" {
-		req.Header.Set("X-Mittodrop-Sender-Name", cfg.SenderDeviceName)
+	if cfg.Identity.DeviceName != "" {
+		senderName = cfg.Identity.DeviceName
+	}
+	if cfg.Identity.SessionID != "" {
+		senderSession = cfg.Identity.SessionID
+	}
+
+	if senderID != "" {
+		req.Header.Set("X-Mittodrop-Sender-ID", senderID)
+	}
+	if senderName != "" {
+		req.Header.Set("X-Mittodrop-Sender-Name", senderName)
+	}
+	if senderSession != "" {
+		req.Header.Set("X-Mittodrop-Sender-Session", senderSession)
 	}
 
 	resp, err := client.Do(req)
@@ -111,8 +132,13 @@ func Connect(ctx context.Context, rawURL string, cfg ClientConfig) (*PeerSession
 	}
 
 	return &PeerSession{
-		BaseURL:     baseURL,
-		Receiver:    hs,
+		BaseURL:  baseURL,
+		Receiver: hs,
+		Remote: utils.PeerIdentity{
+			DeviceID:   hs.DeviceID,
+			DeviceName: hs.DeviceName,
+			SessionID:  hs.SessionID,
+		},
 		ConnectedAt: time.Now(),
 	}, nil
 }

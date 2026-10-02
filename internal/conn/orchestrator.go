@@ -31,6 +31,8 @@ func Listen(ctx context.Context, cfg Config) (*SessionListener, error) {
 		return nil, errors.New("conn: codephrase is required")
 	}
 
+	_ = cfg.Identity.EnsureValid("")
+
 	mode := cfg.Mode
 	if mode == "" {
 		if cfg.RelayAddr != "" {
@@ -122,7 +124,7 @@ func (sl *SessionListener) Accept(ctx context.Context) (*Connection, error) {
 
 	switch mode {
 	case ModeManual:
-		conn, key, err := sl.manualLn.Accept(ctx)
+		conn, key, remoteID, err := sl.manualLn.Accept(ctx, sl.cfg.Identity)
 		if err != nil {
 			return nil, err
 		}
@@ -130,6 +132,8 @@ func (sl *SessionListener) Accept(ctx context.Context) (*Connection, error) {
 			Conn:       conn,
 			SessionKey: key,
 			PathType:   "manual",
+			Local:      sl.cfg.Identity,
+			Remote:     remoteID,
 		}, nil
 
 	case ModeRelay:
@@ -140,7 +144,7 @@ func (sl *SessionListener) Accept(ctx context.Context) (*Connection, error) {
 			return nil, fmt.Errorf("conn: relay connect: %w", err)
 		}
 
-		sessionKey, err := AuthenticateSender(relayConn, sl.cfg.Codephrase)
+		sessionKey, remoteID, err := AuthenticateSender(relayConn, sl.cfg.Codephrase, sl.cfg.Identity)
 		if err != nil {
 			relayConn.Close()
 			return nil, fmt.Errorf("conn: relay auth failed: %w", err)
@@ -161,15 +165,20 @@ func (sl *SessionListener) Accept(ctx context.Context) (*Connection, error) {
 
 		if bytes.Equal(decision, []byte("upgrade-direct")) {
 			// Receiver successfully dialed our direct endpoint; accept it!
-			directConn, directKey, err := sl.manualLn.Accept(ctx)
+			directConn, directKey, directRemoteID, err := sl.manualLn.Accept(ctx, sl.cfg.Identity)
 			relayConn.Close() // Disconnect from relay to conserve bandwidth
 			if err != nil {
 				return nil, fmt.Errorf("conn: accept upgraded direct conn: %w", err)
+			}
+			if directRemoteID.DeviceID == "" {
+				directRemoteID = remoteID
 			}
 			return &Connection{
 				Conn:       directConn,
 				SessionKey: directKey,
 				PathType:   "direct-p2p",
+				Local:      sl.cfg.Identity,
+				Remote:     directRemoteID,
 			}, nil
 		}
 
@@ -179,6 +188,8 @@ func (sl *SessionListener) Accept(ctx context.Context) (*Connection, error) {
 			Conn:       relayConn,
 			SessionKey: sessionKey,
 			PathType:   "relay",
+			Local:      sl.cfg.Identity,
+			Remote:     remoteID,
 		}, nil
 
 	case ModeTunnel, ModeAuto:
@@ -200,7 +211,7 @@ func (sl *SessionListener) Accept(ctx context.Context) (*Connection, error) {
 				return nil, fmt.Errorf("conn: tunnel accept: %w", res.err)
 			}
 
-			key, err := AuthenticateSender(res.conn, sl.cfg.Codephrase)
+			key, remoteID, err := AuthenticateSender(res.conn, sl.cfg.Codephrase, sl.cfg.Identity)
 			if err != nil {
 				res.conn.Close()
 				return nil, fmt.Errorf("conn: tunnel auth failed: %w", err)
@@ -210,6 +221,8 @@ func (sl *SessionListener) Accept(ctx context.Context) (*Connection, error) {
 				Conn:       res.conn,
 				SessionKey: key,
 				PathType:   "tunnel",
+				Local:      sl.cfg.Identity,
+				Remote:     remoteID,
 			}, nil
 		}
 
@@ -246,6 +259,8 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		return nil, errors.New("conn: codephrase is required")
 	}
 
+	_ = cfg.Identity.EnsureValid("")
+
 	mode := cfg.Mode
 	if mode == "" {
 		if cfg.RelayAddr != "" {
@@ -260,7 +275,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		if cfg.TargetAddr == "" {
 			return nil, errors.New("conn: target address is required in manual mode")
 		}
-		conn, key, err := manual.Dial(ctx, cfg.TargetAddr, cfg.Codephrase)
+		conn, key, remoteID, err := manual.Dial(ctx, cfg.TargetAddr, cfg.Codephrase, cfg.Identity)
 		if err != nil {
 			return nil, err
 		}
@@ -268,6 +283,8 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 			Conn:       conn,
 			SessionKey: key,
 			PathType:   "manual",
+			Local:      cfg.Identity,
+			Remote:     remoteID,
 		}, nil
 
 	case ModeRelay:
@@ -281,7 +298,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 			return nil, fmt.Errorf("conn: relay connect: %w", err)
 		}
 
-		sessionKey, err := AuthenticateReceiver(relayConn, cfg.Codephrase)
+		sessionKey, remoteID, err := AuthenticateReceiver(relayConn, cfg.Codephrase, cfg.Identity)
 		if err != nil {
 			relayConn.Close()
 			return nil, fmt.Errorf("conn: relay auth failed: %w", err)
@@ -295,7 +312,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		}
 
 		// Probe candidate endpoints
-		directConn, pathType, probeErr := ProbeCandidates(ctx, candidates, cfg.Codephrase)
+		directConn, pathType, probeErr := ProbeCandidates(ctx, candidates, cfg.Codephrase, cfg.Identity)
 		if probeErr == nil {
 			// Direct probe succeeded! Notify sender to upgrade and switch.
 			_ = relay.WriteFrame(relayConn, []byte("upgrade-direct"))
@@ -305,6 +322,8 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 				Conn:       directConn,
 				SessionKey: sessionKey,
 				PathType:   pathType,
+				Local:      cfg.Identity,
+				Remote:     remoteID,
 			}, nil
 		}
 
@@ -314,6 +333,8 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 			Conn:       relayConn,
 			SessionKey: sessionKey,
 			PathType:   "relay",
+			Local:      cfg.Identity,
+			Remote:     remoteID,
 		}, nil
 
 	case ModeTunnel, ModeAuto:
@@ -337,7 +358,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 			return nil, fmt.Errorf("conn: tunnel dial: %w", err)
 		}
 
-		key, err := AuthenticateReceiver(conn, cfg.Codephrase)
+		key, remoteID, err := AuthenticateReceiver(conn, cfg.Codephrase, cfg.Identity)
 		if err != nil {
 			conn.Close()
 			cli.Close()
@@ -348,6 +369,8 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 			Conn:       conn,
 			SessionKey: key,
 			PathType:   "tunnel",
+			Local:      cfg.Identity,
+			Remote:     remoteID,
 		}, nil
 
 	default:
