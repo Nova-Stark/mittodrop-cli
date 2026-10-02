@@ -221,6 +221,11 @@ func (w *Writer) Abort() error {
 	return nil
 }
 
+// Close satisfies io.Closer by aborting uncommitted staging files if not already finished.
+func (w *Writer) Close() error {
+	return w.Abort()
+}
+
 func (w *Writer) cleanup() {
 	if w.file != nil {
 		_ = w.file.Close()
