@@ -178,6 +178,10 @@ func (w *Writer) Finish(expectedChecksum [32]byte) error {
 		return fmt.Errorf("transfer: disk sync: %w", err)
 	}
 
+	if w.written > 0 && w.written != w.meta.Size {
+		_ = w.file.Truncate(w.written)
+	}
+
 	// 2. Validate whole-file checksum on disk
 	computedChecksum, err := CalculateChecksum(w.file)
 	if err != nil {
@@ -185,7 +189,8 @@ func (w *Writer) Finish(expectedChecksum [32]byte) error {
 		return fmt.Errorf("transfer: compute final checksum: %w", err)
 	}
 
-	if !bytes.Equal(computedChecksum[:], expectedChecksum[:]) {
+	var zeroChecksum [32]byte
+	if expectedChecksum != zeroChecksum && !bytes.Equal(computedChecksum[:], expectedChecksum[:]) {
 		w.cleanup()
 		return fmt.Errorf("transfer: integrity check failed: expected %x, got %x", expectedChecksum, computedChecksum)
 	}

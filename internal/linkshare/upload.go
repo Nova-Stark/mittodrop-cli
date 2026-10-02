@@ -1,13 +1,19 @@
 package linkshare
 
 import (
+	"compress/gzip"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/klauspost/compress/zstd"
+	"mittodrop/internal/transfer"
 )
 
 // UploadResult contains summary of saved file.
@@ -30,7 +36,7 @@ func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request) {
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		results, err = r.saveMultipartStream(req)
 	} else {
-		// Default to raw stream (CLI / curl application/octet-stream)
+		// Raw octet stream (browser fetch streaming or CLI app)
 		results, err = r.saveRawStream(req)
 	}
 
@@ -62,6 +68,108 @@ func formatByteSize(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
+func (r *Receiver) saveStreamToWriter(body io.Reader, filename string, declaredSize int64, encoding string, checksumStr string, isEncrypted bool) (UploadResult, error) {
+	cleanName := sanitizeFilename(filename)
+
+	var reader io.Reader = body
+
+	// 1. Decrypt stream if encrypted
+	if isEncrypted {
+		var zeroKey [32]byte
+		if r.cfg.SessionKey == zeroKey {
+			return UploadResult{}, fmt.Errorf("encrypted upload received, but receiver has no session key configured")
+		}
+		decReader, err := NewDecryptReader(body, r.cfg.SessionKey)
+		if err != nil {
+			return UploadResult{}, fmt.Errorf("init decrypt reader: %w", err)
+		}
+		reader = decReader
+	} else {
+		var zeroKey [32]byte
+		if r.cfg.SessionKey != zeroKey {
+			return UploadResult{}, fmt.Errorf("unencrypted upload rejected: receiver requires encryption")
+		}
+	}
+
+	// 2. Decompress stream if compressed
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "gzip":
+		gz, err := gzip.NewReader(reader)
+		if err != nil {
+			return UploadResult{}, fmt.Errorf("open gzip reader: %w", err)
+		}
+		defer gz.Close()
+		reader = gz
+	case "zstd":
+		dec, err := zstd.NewReader(reader)
+		if err != nil {
+			return UploadResult{}, fmt.Errorf("open zstd reader: %w", err)
+		}
+		defer dec.Close()
+		reader = dec
+	}
+
+	var expectedChecksum [32]byte
+	checksumStr = strings.TrimSpace(checksumStr)
+	if checksumStr != "" {
+		raw, err := hex.DecodeString(checksumStr)
+		if err == nil && len(raw) == 32 {
+			copy(expectedChecksum[:], raw)
+		}
+	}
+
+	meta := transfer.FileMetadata{
+		Name:     cleanName,
+		Size:     declaredSize,
+		Checksum: expectedChecksum,
+	}
+
+	writer, err := transfer.NewWriter(r.cfg.SaveDir, meta)
+	if err != nil {
+		return UploadResult{}, fmt.Errorf("init transfer writer: %w", err)
+	}
+	defer writer.Close()
+
+	buf := make([]byte, transfer.DefaultChunkSize)
+	var offset int64
+	var chunkIdx uint64
+	var totalWritten int64
+
+	for {
+		n, readErr := io.ReadFull(reader, buf)
+		if n > 0 {
+			chunk := &transfer.Chunk{
+				Index:        chunkIdx,
+				Offset:       offset,
+				RawSize:      uint32(n),
+				IsCompressed: false, // decompressed before staging
+				Data:         buf[:n],
+			}
+			if err := writer.WriteChunk(chunk); err != nil {
+				return UploadResult{}, fmt.Errorf("write chunk %d: %w", chunkIdx, err)
+			}
+			offset += int64(n)
+			totalWritten += int64(n)
+			chunkIdx++
+		}
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+			break
+		}
+		if readErr != nil {
+			return UploadResult{}, fmt.Errorf("read stream: %w", readErr)
+		}
+	}
+
+	if err := writer.Finish(expectedChecksum); err != nil {
+		return UploadResult{}, fmt.Errorf("verify and commit: %w", err)
+	}
+
+	return UploadResult{
+		Filename: cleanName,
+		Bytes:    totalWritten,
+	}, nil
+}
+
 func (r *Receiver) saveMultipartStream(req *http.Request) ([]UploadResult, error) {
 	reader, err := req.MultipartReader()
 	if err != nil {
@@ -85,26 +193,16 @@ func (r *Receiver) saveMultipartStream(req *http.Request) ([]UploadResult, error
 			continue
 		}
 
-		cleanName := sanitizeFilename(filename)
-		destPath := filepath.Join(r.cfg.SaveDir, cleanName)
+		encoding := part.Header.Get("Content-Encoding")
+		checksumStr := part.Header.Get("X-File-Checksum")
 
-		outFile, err := os.Create(destPath)
-		if err != nil {
-			part.Close()
-			return nil, fmt.Errorf("create file %q: %w", cleanName, err)
-		}
-
-		written, err := io.Copy(outFile, part)
-		outFile.Close()
+		res, err := r.saveStreamToWriter(part, filename, 0, encoding, checksumStr, false)
 		part.Close()
 		if err != nil {
-			return nil, fmt.Errorf("write file %q: %w", cleanName, err)
+			return nil, fmt.Errorf("save part %q: %w", filename, err)
 		}
 
-		results = append(results, UploadResult{
-			Filename: cleanName,
-			Bytes:    written,
-		})
+		results = append(results, res)
 	}
 
 	if len(results) == 0 {
@@ -118,26 +216,30 @@ func (r *Receiver) saveRawStream(req *http.Request) ([]UploadResult, error) {
 	filename := req.Header.Get("X-File-Name")
 	if filename == "" {
 		filename = "uploaded.bin"
+	} else if unescaped, err := url.PathUnescape(filename); err == nil && unescaped != "" {
+		filename = unescaped
 	}
 
-	cleanName := sanitizeFilename(filename)
-	destPath := filepath.Join(r.cfg.SaveDir, cleanName)
+	encoding := req.Header.Get("Content-Encoding")
+	if encoding == "" {
+		encoding = req.Header.Get("X-Content-Encoding")
+	}
+	checksumStr := req.Header.Get("X-File-Checksum")
+	isEncrypted := strings.EqualFold(req.Header.Get("X-Mittodrop-Encrypted"), "true")
 
-	outFile, err := os.Create(destPath)
+	var declaredSize int64
+	if szStr := req.Header.Get("X-File-Size"); szStr != "" {
+		declaredSize, _ = strconv.ParseInt(szStr, 10, 64)
+	} else if req.ContentLength > 0 && encoding == "" && !isEncrypted {
+		declaredSize = req.ContentLength
+	}
+
+	res, err := r.saveStreamToWriter(req.Body, filename, declaredSize, encoding, checksumStr, isEncrypted)
 	if err != nil {
-		return nil, fmt.Errorf("create file %q: %w", cleanName, err)
-	}
-	defer outFile.Close()
-
-	written, err := io.Copy(outFile, req.Body)
-	if err != nil {
-		return nil, fmt.Errorf("stream write %q: %w", cleanName, err)
+		return nil, fmt.Errorf("stream write %q: %w", filename, err)
 	}
 
-	return []UploadResult{{
-		Filename: cleanName,
-		Bytes:    written,
-	}}, nil
+	return []UploadResult{res}, nil
 }
 
 func sanitizeFilename(name string) string {

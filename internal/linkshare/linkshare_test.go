@@ -2,7 +2,10 @@ package linkshare
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -196,5 +199,96 @@ func TestReceiver_HandshakeAndUpload(t *testing.T) {
 	if _, err := os.Stat(parentEvil); err == nil {
 		t.Errorf("SECURITY: path traversal escaped saveDir to %s", parentEvil)
 		os.Remove(parentEvil)
+	}
+}
+
+func TestReceiver_BrowserGzipAndChecksumUpload(t *testing.T) {
+	rcv, tempDir := createTestReceiver(t)
+	defer os.RemoveAll(tempDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = rcv.Start(ctx)
+	}()
+
+	select {
+	case <-rcv.Ready():
+	case <-time.After(3 * time.Second):
+		t.Fatal("receiver failed to start listening in time")
+	}
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", rcv.Port())
+
+	// 1. Prepare raw compressible content and calculate uncompressed SHA-256
+	rawContent := strings.Repeat("mittodrop browser dropzone gzip high-speed transfer test line\n", 500)
+	rawBytes := []byte(rawContent)
+	sum := sha256.Sum256(rawBytes)
+	checksumHex := hex.EncodeToString(sum[:])
+
+	// Gzip compress payload
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	_, _ = gw.Write(rawBytes)
+	_ = gw.Close()
+
+	// 2. Upload with gzip and checksum
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/upload", &gzBuf)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("X-File-Name", "browser_doc.txt")
+	req.Header.Set("X-File-Size", fmt.Sprintf("%d", len(rawBytes)))
+	req.Header.Set("X-File-Checksum", checksumHex)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /upload: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("upload failed %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Verify saved content on disk matches uncompressed rawBytes
+	savedPath := filepath.Join(tempDir, "browser_doc.txt")
+	savedData, err := os.ReadFile(savedPath)
+	if err != nil {
+		t.Fatalf("read saved file: %v", err)
+	}
+	if !bytes.Equal(savedData, rawBytes) {
+		t.Fatalf("content mismatch on disk: got %d bytes, want %d bytes", len(savedData), len(rawBytes))
+	}
+
+	// 3. Test Checksum Mismatch rejects upload
+	var badGzBuf bytes.Buffer
+	gw2 := gzip.NewWriter(&badGzBuf)
+	_, _ = gw2.Write([]byte("tampered content"))
+	_ = gw2.Close()
+
+	badReq, _ := http.NewRequest(http.MethodPost, baseURL+"/upload", &badGzBuf)
+	badReq.Header.Set("Content-Type", "application/octet-stream")
+	badReq.Header.Set("Content-Encoding", "gzip")
+	badReq.Header.Set("X-File-Name", "bad_doc.txt")
+	badReq.Header.Set("X-File-Checksum", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") // mismatched non-zero checksum
+
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatalf("bad req: %v", err)
+	}
+	defer badResp.Body.Close()
+
+	if badResp.StatusCode == http.StatusOK {
+		t.Fatalf("expected error on checksum mismatch, got 200 OK")
+	}
+
+	// Ensure bad_doc.txt was NOT saved
+	if _, err := os.Stat(filepath.Join(tempDir, "bad_doc.txt")); err == nil {
+		t.Fatalf("bad_doc.txt was saved despite checksum mismatch")
 	}
 }

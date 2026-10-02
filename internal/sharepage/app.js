@@ -6,6 +6,7 @@
   const progressPercent = document.getElementById('progress-percent');
   const progressBytes = document.getElementById('progress-bytes');
   const progressSpeed = document.getElementById('progress-speed');
+  const progressStatus = document.getElementById('progress-status');
   const successBox = document.getElementById('success-box');
   const fileList = document.getElementById('file-list');
   const resetBtn = document.getElementById('reset-btn');
@@ -65,75 +66,186 @@
   });
 
   function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
+    if (!bytes || bytes <= 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
 
-  function uploadFiles(files) {
+  // Extensions of files that are already compressed; compressing again wastes CPU
+  const PRECOMPRESSED_EXTS = new Set([
+    'zip', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'zst',
+    'jpg', 'jpeg', 'png', 'gif', 'webp', 'avif',
+    'mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'flac', 'aac', 'wav', 'ogg',
+    'pdf', 'docx', 'xlsx', 'pptx', 'apk', 'iso', 'dmg', 'exe'
+  ]);
+
+  function getExtension(name) {
+    const idx = name.lastIndexOf('.');
+    return idx !== -1 ? name.slice(idx + 1).toLowerCase() : '';
+  }
+
+  function shouldCompress(file) {
+    if (typeof CompressionStream === 'undefined') return false;
+    // Don't compress tiny files (< 1 KB) or very large files (> 200 MB) in-browser
+    if (file.size < 1024 || file.size > 200 * 1024 * 1024) return false;
+    const ext = getExtension(file.name);
+    return !PRECOMPRESSED_EXTS.has(ext);
+  }
+
+  // Compute SHA-256 using Web Crypto API when available (secure contexts & <= 256 MB)
+  async function computeSHA256(file) {
+    if (!window.crypto || !window.crypto.subtle) return '';
+    if (file.size > 256 * 1024 * 1024) return '';
+    try {
+      const buffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+      console.warn('Web Crypto SHA-256 calculation skipped:', e);
+      return '';
+    }
+  }
+
+  // Adaptive browser gzip compression using native CompressionStream
+  async function compressFileGzip(file) {
+    try {
+      const cs = new CompressionStream('gzip');
+      const compressedStream = file.stream().pipeThrough(cs);
+      const compressedBlob = await new Response(compressedStream).blob();
+      // Only keep compressed blob if it achieved at least 5% compression
+      if (compressedBlob.size < file.size * 0.95) {
+        return compressedBlob;
+      }
+      return null;
+    } catch (e) {
+      console.warn('Browser gzip compression failed, falling back to raw:', e);
+      return null;
+    }
+  }
+
+  function uploadSingleFile(file, compressedBlob, checksum, currentIdx, totalFiles) {
+    return new Promise((resolve, reject) => {
+      const bodyToSend = compressedBlob || file;
+      const isCompressed = !!compressedBlob;
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/upload', true);
+
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+      xhr.setRequestHeader('X-File-Size', file.size.toString());
+      if (checksum) {
+        xhr.setRequestHeader('X-File-Checksum', checksum);
+      }
+      if (isCompressed) {
+        xhr.setRequestHeader('Content-Encoding', 'gzip');
+        xhr.setRequestHeader('X-Content-Encoding', 'gzip');
+      }
+
+      const fileLabel = totalFiles > 1 ? `[${currentIdx + 1}/${totalFiles}] ` : '';
+      const compTag = isCompressed ? ' (gzip)' : '';
+
+      let startTime = Date.now();
+      let prevLoaded = 0;
+      let prevTime = startTime;
+
+      xhr.upload.onprogress = function(e) {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          progressBar.style.width = percent + '%';
+          progressPercent.textContent = percent + '%';
+          if (progressStatus) {
+            progressStatus.textContent = `${fileLabel}Uploading ${file.name}${compTag}...`;
+          }
+          progressBytes.textContent = formatBytes(e.loaded) + ' / ' + formatBytes(e.total);
+
+          const now = Date.now();
+          const timeDiff = (now - prevTime) / 1000;
+          if (timeDiff >= 0.5) {
+            const speed = (e.loaded - prevLoaded) / timeDiff;
+            progressSpeed.textContent = formatBytes(speed) + '/s';
+            prevLoaded = e.loaded;
+            prevTime = now;
+          }
+        }
+      };
+
+      xhr.onload = function() {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const parsed = JSON.parse(xhr.responseText);
+            resolve(parsed && parsed.length > 0 ? parsed[0] : { filename: file.name, bytes: file.size });
+          } catch (_) {
+            resolve({ filename: file.name, bytes: file.size });
+          }
+        } else {
+          reject(new Error(xhr.responseText || `HTTP ${xhr.status}: ${xhr.statusText}`));
+        }
+      };
+
+      xhr.onerror = function() {
+        reject(new Error('Network connection error during upload'));
+      };
+
+      xhr.send(bodyToSend);
+    });
+  }
+
+  async function uploadFiles(files) {
+    if (!files || files.length === 0) return;
+
     dropzone.style.display = 'none';
     successBox.style.display = 'none';
     progressBox.style.display = 'block';
 
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-      formData.append('files', files[i]);
-    }
+    const results = [];
+    const total = files.length;
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/upload', true);
+    try {
+      for (let i = 0; i < total; i++) {
+        const file = files[i];
+        const fileLabel = total > 1 ? `[${i + 1}/${total}] ` : '';
 
-    let startTime = Date.now();
-    let prevLoaded = 0;
-    let prevTime = startTime;
+        // Reset progress indicators for this file
+        progressBar.style.width = '0%';
+        progressPercent.textContent = '0%';
+        progressSpeed.textContent = '-- MB/s';
+        progressBytes.textContent = `0 B / ${formatBytes(file.size)}`;
 
-    xhr.upload.onprogress = function(e) {
-      if (e.lengthComputable) {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        progressBar.style.width = percent + '%';
-        progressPercent.textContent = percent + '%';
-        progressBytes.textContent = formatBytes(e.loaded) + ' / ' + formatBytes(e.total);
-
-        // Speed calculation
-        const now = Date.now();
-        const timeDiff = (now - prevTime) / 1000;
-        if (timeDiff >= 0.5) {
-          const speed = (e.loaded - prevLoaded) / timeDiff;
-          progressSpeed.textContent = formatBytes(speed) + '/s';
-          prevLoaded = e.loaded;
-          prevTime = now;
+        // Step 1: Web Crypto SHA-256 Checksum
+        if (progressStatus) {
+          progressStatus.textContent = `${fileLabel}Hashing ${file.name}...`;
         }
-      }
-    };
+        const checksum = await computeSHA256(file);
 
-    xhr.onload = function() {
-      if (xhr.status === 200) {
-        let results = [];
-        try {
-          results = JSON.parse(xhr.responseText);
-        } catch (err) {
-          // fallback
-          for (let i = 0; i < files.length; i++) {
-            results.push({ filename: files[i].name, bytes: files[i].size });
+        // Step 2: Adaptive Gzip Compression
+        let compressedBlob = null;
+        if (shouldCompress(file)) {
+          if (progressStatus) {
+            progressStatus.textContent = `${fileLabel}Compressing ${file.name} (gzip)...`;
           }
+          compressedBlob = await compressFileGzip(file);
         }
-        showSuccess(results);
-      } else {
-        alert('Upload failed: ' + xhr.statusText);
-        dropzone.style.display = 'block';
-        progressBox.style.display = 'none';
-      }
-    };
 
-    xhr.onerror = function() {
-      alert('Network error while uploading');
+        // Step 3: Stream payload to /upload
+        if (progressStatus) {
+          const compTag = compressedBlob ? ' (gzip)' : '';
+          progressStatus.textContent = `${fileLabel}Uploading ${file.name}${compTag}...`;
+        }
+
+        const res = await uploadSingleFile(file, compressedBlob, checksum, i, total);
+        results.push(res);
+      }
+
+      showSuccess(results);
+    } catch (err) {
+      alert('Upload failed: ' + err.message);
       dropzone.style.display = 'block';
       progressBox.style.display = 'none';
-    };
-
-    xhr.send(formData);
+    }
   }
 
   function showSuccess(results) {

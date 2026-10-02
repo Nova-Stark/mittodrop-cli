@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/google/uuid v1.6.0
 	github.com/huin/goupnp v1.3.0
+	github.com/klauspost/compress v1.19.1
 	github.com/schollz/pake/v3 v3.2.0
 	github.com/tailscale/tailcat v0.7.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
@@ -61,7 +62,6 @@ require (
 	github.com/jellydator/ttlcache/v3 v3.1.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/kortschak/wol v0.0.0-20200729010619-da482cc4850a // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/mdlayher/genetlink v1.3.2 // indirect

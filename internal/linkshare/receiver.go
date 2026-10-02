@@ -21,6 +21,7 @@ type ReceiverConfig struct {
 	SessionID  string
 	SaveDir    string
 	Port       int // 0 to auto-pick candidate port
+	SessionKey [32]byte
 }
 
 // Receiver runs dual-stack HTTP server for direct link uploads.
