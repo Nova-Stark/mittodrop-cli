@@ -18,8 +18,27 @@ type DiscoveredDevice struct {
 	SessionID    string    `json:"session_id"`
 	InterfaceIP  string    `json:"interface_ip"`
 	TransferPort int       `json:"transfer_port"`
+	Codephrase   string    `json:"codephrase,omitempty"`
+	Endpoints    []string  `json:"endpoints,omitempty"`
 	IsIPv6       bool      `json:"is_ipv6"`
 	LastSeen     time.Time `json:"last_seen"`
+}
+
+// Addr returns dialable host:port address string
+func (d DiscoveredDevice) Addr() string {
+	if d.IsIPv6 {
+		return fmt.Sprintf("[%s]:%d", d.InterfaceIP, d.TransferPort)
+	}
+	return fmt.Sprintf("%s:%d", d.InterfaceIP, d.TransferPort)
+}
+
+// Identity returns peer identity representation
+func (d DiscoveredDevice) Identity() utils.PeerIdentity {
+	return utils.PeerIdentity{
+		DeviceID:   d.DeviceID,
+		DeviceName: d.DeviceName,
+		SessionID:  d.SessionID,
+	}
 }
 
 type ReceiverConfig struct {
@@ -142,6 +161,11 @@ func (r *Receiver) listenLoop(ctx context.Context, conn *net.UDPConn, wg *sync.W
 	}
 }
 
+// ProcessBeacon injects a shout message for peer discovery processing
+func (r *Receiver) ProcessBeacon(msg *ShoutMessage) {
+	r.handleMessage(msg)
+}
+
 // handleMessage updates the slice with one entry per session, enforcing IPv6 priority.
 func (r *Receiver) handleMessage(msg *ShoutMessage) {
 	// Filter out own beacons: prefer SelfSessionID if configured, else SelfDeviceID
@@ -171,6 +195,13 @@ func (r *Receiver) handleMessage(msg *ShoutMessage) {
 		}
 	}
 
+	var addrStr string
+	if incomingIsIPv6 {
+		addrStr = fmt.Sprintf("[%s]:%d", msg.InterfaceIP, msg.TransferPort)
+	} else {
+		addrStr = fmt.Sprintf("%s:%d", msg.InterfaceIP, msg.TransferPort)
+	}
+
 	// Device not seen yet: add new entry
 	if idx == -1 {
 		r.devices = append(r.devices, DiscoveredDevice{
@@ -179,6 +210,8 @@ func (r *Receiver) handleMessage(msg *ShoutMessage) {
 			SessionID:    msg.SessionID,
 			InterfaceIP:  msg.InterfaceIP,
 			TransferPort: msg.TransferPort,
+			Codephrase:   msg.Codephrase,
+			Endpoints:    []string{addrStr},
 			IsIPv6:       incomingIsIPv6,
 			LastSeen:     now,
 		})
@@ -190,6 +223,20 @@ func (r *Receiver) handleMessage(msg *ShoutMessage) {
 	existing.LastSeen = now
 	existing.DeviceName = msg.DeviceName
 	existing.SessionID = msg.SessionID
+	if msg.Codephrase != "" {
+		existing.Codephrase = msg.Codephrase
+	}
+
+	hasAddr := false
+	for _, ep := range existing.Endpoints {
+		if ep == addrStr {
+			hasAddr = true
+			break
+		}
+	}
+	if !hasAddr {
+		existing.Endpoints = append(existing.Endpoints, addrStr)
+	}
 
 	if incomingIsIPv6 {
 		// IPv6 always updates or upgrades entry

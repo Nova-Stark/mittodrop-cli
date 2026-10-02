@@ -14,10 +14,12 @@ import (
 const DefaultShoutInterval = 2500 * time.Millisecond
 
 type SenderConfig struct {
+	Identity     utils.PeerIdentity
 	DeviceID     string
 	DeviceName   string
 	SessionID    string
 	TransferPort int
+	Codephrase   string
 	Interval     time.Duration
 }
 
@@ -26,6 +28,22 @@ type Sender struct {
 }
 
 func NewSender(cfg SenderConfig) (*Sender, error) {
+	if cfg.Identity.DeviceID != "" {
+		if cfg.DeviceID == "" {
+			cfg.DeviceID = cfg.Identity.DeviceID
+		}
+		if cfg.DeviceName == "" {
+			cfg.DeviceName = cfg.Identity.DeviceName
+		}
+		if cfg.SessionID == "" {
+			cfg.SessionID = cfg.Identity.SessionID
+		}
+	} else if cfg.DeviceID != "" {
+		cfg.Identity.DeviceID = cfg.DeviceID
+		cfg.Identity.DeviceName = cfg.DeviceName
+		cfg.Identity.SessionID = cfg.SessionID
+	}
+
 	if cfg.DeviceID == "" {
 		return nil, fmt.Errorf("shout sender: device_id is required")
 	}
@@ -42,6 +60,19 @@ func NewSender(cfg SenderConfig) (*Sender, error) {
 		cfg.Interval = DefaultShoutInterval
 	}
 	return &Sender{cfg: cfg}, nil
+}
+
+// NewAnnouncer initializes a shout sender for an active listening transfer port
+func NewAnnouncer(port int, id utils.PeerIdentity, codephrase string) (*Sender, error) {
+	_ = id.EnsureValid("")
+	return NewSender(SenderConfig{
+		Identity:     id,
+		DeviceID:     id.DeviceID,
+		DeviceName:   id.DeviceName,
+		SessionID:    id.SessionID,
+		TransferPort: port,
+		Codephrase:   codephrase,
+	})
 }
 
 func (s *Sender) Start(ctx context.Context) error {
@@ -99,6 +130,7 @@ func (s *Sender) sendOnIP(ifaceName string, item netif.IPitem) error {
 		SessionID:    s.cfg.SessionID,
 		InterfaceIP:  item.IP.String(),
 		TransferPort: s.cfg.TransferPort,
+		Codephrase:   s.cfg.Codephrase,
 	}
 
 	payload, err := msg.EncodeMsgpack()
