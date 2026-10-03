@@ -30,6 +30,14 @@ func (s *Session) Listener() *conn.SessionListener {
 	return s.sl
 }
 
+// TunnelAddr returns the Tailcat address string if tunnel mode is active.
+func (s *Session) TunnelAddr() string {
+	if s.sl != nil {
+		return s.sl.TunnelAddr()
+	}
+	return ""
+}
+
 // Close cleans up listener endpoints
 func (s *Session) Close() error {
 	if s.sl != nil {

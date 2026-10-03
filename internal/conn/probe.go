@@ -14,28 +14,28 @@ import (
 )
 
 // ProbeTimeout is the per-candidate connection timeout.
-const ProbeTimeout = 1500 * time.Millisecond
+const ProbeTimeout = 500 * time.Millisecond
 
 // ProbeCandidates tries dialing the sender's candidate endpoints in priority order:
 // IPv6 direct -> Local LAN -> UPnP public port.
-// Returns the first successfully authenticated direct connection and its path type.
-func ProbeCandidates(ctx context.Context, candidates []manual.Endpoint, codephrase string, local ...utils.PeerIdentity) (net.Conn, string, error) {
+// Returns the first successfully authenticated direct connection, its derived session key, and its path type.
+func ProbeCandidates(ctx context.Context, candidates []manual.Endpoint, codephrase string, local ...utils.PeerIdentity) (net.Conn, [32]byte, string, error) {
 	if len(candidates) == 0 {
-		return nil, "", errors.New("conn: no candidates to probe")
+		return nil, [32]byte{}, "", errors.New("conn: no candidates to probe")
 	}
 
 	for _, ep := range candidates {
 		probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
-		conn, _, _, err := manual.Dial(probeCtx, ep.Address, codephrase, local...)
+		conn, key, _, err := manual.Dial(probeCtx, ep.Address, codephrase, local...)
 		cancel()
 
 		if err == nil {
 			pathType := "direct-" + ep.Type
-			return conn, pathType, nil
+			return conn, key, pathType, nil
 		}
 	}
 
-	return nil, "", errors.New("conn: all candidate endpoints failed")
+	return nil, [32]byte{}, "", errors.New("conn: all candidate endpoints failed")
 }
 
 // SendCandidates serializes and sends candidates over a control stream.

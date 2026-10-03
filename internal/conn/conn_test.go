@@ -298,7 +298,7 @@ func TestProbeCandidates_DirectSuccess(t *testing.T) {
 		acceptedConn, _, _, acceptErr = ln.Accept(ctx)
 	}()
 
-	directConn, pathType, err := conn.ProbeCandidates(ctx, candidates, codephrase)
+	directConn, _, pathType, err := conn.ProbeCandidates(ctx, candidates, codephrase)
 	if err != nil {
 		t.Fatalf("ProbeCandidates failed: %v", err)
 	}

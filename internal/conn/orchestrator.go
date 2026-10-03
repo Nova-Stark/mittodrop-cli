@@ -12,6 +12,7 @@ import (
 	"mittodrop/internal/pake"
 	"mittodrop/internal/relay"
 	"mittodrop/internal/tunnel"
+	"mittodrop/internal/utils"
 )
 
 // SessionListener manages inbound connection negotiation for a sender.
@@ -99,6 +100,14 @@ func (sl *SessionListener) Endpoints() []manual.Endpoint {
 	return nil
 }
 
+// Port returns the bound port for manual direct listeners.
+func (sl *SessionListener) Port() int {
+	if sl.manualLn != nil {
+		return sl.manualLn.Port()
+	}
+	return 0
+}
+
 // TunnelAddr returns the Tailcat address string if tunnel mode is active.
 func (sl *SessionListener) TunnelAddr() string {
 	return sl.tunnelAddr
@@ -156,34 +165,52 @@ func (sl *SessionListener) Accept(ctx context.Context) (*Connection, error) {
 			return nil, err
 		}
 
+		type acceptDirectResult struct {
+			conn     net.Conn
+			key      [32]byte
+			remoteID utils.PeerIdentity
+			err      error
+		}
+		directCh := make(chan acceptDirectResult, 1)
+		go func() {
+			c, k, r, err := sl.manualLn.Accept(ctx, sl.cfg.Identity)
+			directCh <- acceptDirectResult{conn: c, key: k, remoteID: r, err: err}
+		}()
+
 		// Wait for receiver's decision
 		decision, err := relay.ReadFrame(relayConn)
 		if err != nil {
+			_ = sl.manualLn.Close()
 			relayConn.Close()
 			return nil, fmt.Errorf("conn: read upgrade decision: %w", err)
 		}
 
 		if bytes.Equal(decision, []byte("upgrade-direct")) {
-			// Receiver successfully dialed our direct endpoint; accept it!
-			directConn, directKey, directRemoteID, err := sl.manualLn.Accept(ctx, sl.cfg.Identity)
+			// Receiver successfully dialed our direct endpoint; collect accepted conn
 			relayConn.Close() // Disconnect from relay to conserve bandwidth
-			if err != nil {
-				return nil, fmt.Errorf("conn: accept upgraded direct conn: %w", err)
+			select {
+			case <-ctx.Done():
+				_ = sl.manualLn.Close()
+				return nil, ctx.Err()
+			case res := <-directCh:
+				if res.err != nil {
+					return nil, fmt.Errorf("conn: accept upgraded direct conn: %w", res.err)
+				}
+				if res.remoteID.DeviceID == "" {
+					res.remoteID = remoteID
+				}
+				return &Connection{
+					Conn:       res.conn,
+					SessionKey: res.key,
+					PathType:   "direct-p2p",
+					Local:      sl.cfg.Identity,
+					Remote:     res.remoteID,
+				}, nil
 			}
-			if directRemoteID.DeviceID == "" {
-				directRemoteID = remoteID
-			}
-			return &Connection{
-				Conn:       directConn,
-				SessionKey: directKey,
-				PathType:   "direct-p2p",
-				Local:      sl.cfg.Identity,
-				Remote:     directRemoteID,
-			}, nil
 		}
 
 		// Receiver could not reach direct endpoints; stay on relayed stream
-		sl.manualLn.Close()
+		_ = sl.manualLn.Close()
 		return &Connection{
 			Conn:       relayConn,
 			SessionKey: sessionKey,
@@ -312,7 +339,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 		}
 
 		// Probe candidate endpoints
-		directConn, pathType, probeErr := ProbeCandidates(ctx, candidates, cfg.Codephrase, cfg.Identity)
+		directConn, directKey, pathType, probeErr := ProbeCandidates(ctx, candidates, cfg.Codephrase, cfg.Identity)
 		if probeErr == nil {
 			// Direct probe succeeded! Notify sender to upgrade and switch.
 			_ = relay.WriteFrame(relayConn, []byte("upgrade-direct"))
@@ -320,7 +347,7 @@ func Connect(ctx context.Context, cfg Config) (*Connection, error) {
 
 			return &Connection{
 				Conn:       directConn,
-				SessionKey: sessionKey,
+				SessionKey: directKey,
 				PathType:   pathType,
 				Local:      cfg.Identity,
 				Remote:     remoteID,
