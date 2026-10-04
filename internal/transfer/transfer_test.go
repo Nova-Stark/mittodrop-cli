@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"io"
 	"os"
 	"path/filepath"
@@ -276,5 +277,100 @@ func TestTransfer_Abort(t *testing.T) {
 
 	if _, err := os.Stat(stagingPath); !os.IsNotExist(err) {
 		t.Fatalf("expected staging file to be deleted after abort")
+	}
+}
+
+func TestTransfer_CollisionAndDisambiguation(t *testing.T) {
+	dstDir := t.TempDir()
+
+	contentA := []byte("Initial content version A")
+	existingPath := filepath.Join(dstDir, "report.txt")
+	if err := os.WriteFile(existingPath, contentA, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	contentB := []byte("Different content version B")
+	var sumB [32]byte
+	h := sha256.Sum256(contentB)
+	copy(sumB[:], h[:])
+
+	metaB := transfer.FileMetadata{
+		Name:        "report.txt",
+		Size:        int64(len(contentB)),
+		Checksum:    sumB,
+		ChunkSize:   1024,
+		TotalChunks: 1,
+	}
+
+	// 1. Concurrent writers have distinct staging paths
+	w1, err := transfer.NewWriter(dstDir, metaB)
+	if err != nil {
+		t.Fatalf("NewWriter 1: %v", err)
+	}
+	defer w1.Abort()
+
+	w2, err := transfer.NewWriter(dstDir, metaB)
+	if err != nil {
+		t.Fatalf("NewWriter 2: %v", err)
+	}
+	defer w2.Abort()
+
+	if w1.StagingPath() == w2.StagingPath() {
+		t.Fatalf("expected distinct staging paths for concurrent writers, got %q", w1.StagingPath())
+	}
+
+	// Write chunk for w1
+	chunkB := &transfer.Chunk{
+		Index:        0,
+		Offset:       0,
+		RawSize:      uint32(len(contentB)),
+		CompSize:     uint32(len(contentB)),
+		IsCompressed: false,
+		Data:         contentB,
+	}
+	if err := w1.WriteChunk(chunkB); err != nil {
+		t.Fatalf("WriteChunk: %v", err)
+	}
+
+	if err := w1.Finish(sumB); err != nil {
+		t.Fatalf("Finish w1: %v", err)
+	}
+
+	// Target should have been disambiguated to report (1).txt
+	disambiguatedPath := filepath.Join(dstDir, "report (1).txt")
+	dataDisambiguated, err := os.ReadFile(disambiguatedPath)
+	if err != nil {
+		t.Fatalf("expected disambiguated file %q: %v", disambiguatedPath, err)
+	}
+	if !bytes.Equal(dataDisambiguated, contentB) {
+		t.Fatalf("got %q, want %q", dataDisambiguated, contentB)
+	}
+
+	// 2. Dedup: sending contentB again should match report (1).txt or existing without error
+	// Let's create a writer for report (1).txt with identical contentB
+	metaIdentical := transfer.FileMetadata{
+		Name:        "report (1).txt",
+		Size:        int64(len(contentB)),
+		Checksum:    sumB,
+		ChunkSize:   1024,
+		TotalChunks: 1,
+	}
+	wIdentical, err := transfer.NewWriter(dstDir, metaIdentical)
+	if err != nil {
+		t.Fatalf("NewWriter identical: %v", err)
+	}
+	defer wIdentical.Abort()
+
+	if err := wIdentical.WriteChunk(chunkB); err != nil {
+		t.Fatalf("WriteChunk identical: %v", err)
+	}
+	if err := wIdentical.Finish(sumB); err != nil {
+		t.Fatalf("Finish identical: %v", err)
+	}
+
+	// Should not have created report (1) (1).txt because content was identical
+	redundantPath := filepath.Join(dstDir, "report (1) (1).txt")
+	if _, err := os.Stat(redundantPath); !os.IsNotExist(err) {
+		t.Fatalf("expected redundant file %q to NOT exist", redundantPath)
 	}
 }

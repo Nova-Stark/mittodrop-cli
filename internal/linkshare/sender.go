@@ -25,6 +25,7 @@ const DefaultConnectTimeout = 5 * time.Second
 // ClientConfig holds settings for dialing linkshare receiver.
 type ClientConfig struct {
 	Timeout          time.Duration
+	Token            string
 	Identity         utils.PeerIdentity
 	SenderDeviceID   string
 	SenderDeviceName string
@@ -35,6 +36,7 @@ type ClientConfig struct {
 // PeerSession represents verified connection established with a linkshare receiver.
 type PeerSession struct {
 	BaseURL     string             `json:"base_url"`
+	Token       string             `json:"token"`
 	Receiver    HandshakeResponse  `json:"receiver"`
 	Remote      utils.PeerIdentity `json:"remote"`
 	SessionKey  [32]byte           `json:"session_key"`
@@ -71,11 +73,38 @@ func NormalizeURL(rawURL string) (string, error) {
 	return fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host), nil
 }
 
+// ExtractAndNormalizeURL ensures http scheme and extracts any embedded ?token= query parameter.
+func ExtractAndNormalizeURL(raw string) (string, string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", errors.New("linkshare: empty URL")
+	}
+
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		raw = "http://" + raw
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", "", fmt.Errorf("linkshare: invalid URL %q: %w", raw, err)
+	}
+
+	token := parsed.Query().Get("token")
+	cleanURL := fmt.Sprintf("%s://%s%s", parsed.Scheme, parsed.Host, parsed.Path)
+	cleanURL = strings.TrimRight(cleanURL, "/")
+
+	return cleanURL, token, nil
+}
+
 // Connect dials receiver URL, executes pre-flight handshake, and verifies readiness.
 func Connect(ctx context.Context, rawURL string, cfg ClientConfig) (*PeerSession, error) {
-	baseURL, err := NormalizeURL(rawURL)
+	baseURL, urlToken, err := ExtractAndNormalizeURL(rawURL)
 	if err != nil {
 		return nil, err
+	}
+	token := cfg.Token
+	if token == "" {
+		token = urlToken
 	}
 
 	timeout := cfg.Timeout
@@ -94,6 +123,9 @@ func Connect(ctx context.Context, rawURL string, cfg ClientConfig) (*PeerSession
 	}
 
 	req.Header.Set("Accept", "application/json")
+	if token != "" {
+		req.Header.Set("X-LinkShare-Token", token)
+	}
 	senderID := cfg.SenderDeviceID
 	senderName := cfg.SenderDeviceName
 	senderSession := cfg.SenderSessionID
@@ -142,6 +174,7 @@ func Connect(ctx context.Context, rawURL string, cfg ClientConfig) (*PeerSession
 
 	return &PeerSession{
 		BaseURL:  baseURL,
+		Token:    token,
 		Receiver: hs,
 		Remote: utils.PeerIdentity{
 			DeviceID:   hs.DeviceID,
@@ -298,6 +331,9 @@ func (s *PeerSession) UploadStream(ctx context.Context, name string, size int64,
 	}
 	if isEncrypted {
 		req.Header.Set("X-Mittodrop-Encrypted", "true")
+	}
+	if s.Token != "" {
+		req.Header.Set("X-LinkShare-Token", s.Token)
 	}
 
 	client := &http.Client{

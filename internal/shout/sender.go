@@ -19,7 +19,6 @@ type SenderConfig struct {
 	DeviceName   string
 	SessionID    string
 	TransferPort int
-	Codephrase   string
 	Interval     time.Duration
 }
 
@@ -63,7 +62,7 @@ func NewSender(cfg SenderConfig) (*Sender, error) {
 }
 
 // NewAnnouncer initializes a shout sender for an active listening transfer port
-func NewAnnouncer(port int, id utils.PeerIdentity, codephrase string) (*Sender, error) {
+func NewAnnouncer(port int, id utils.PeerIdentity) (*Sender, error) {
 	_ = id.EnsureValid("")
 	return NewSender(SenderConfig{
 		Identity:     id,
@@ -71,7 +70,6 @@ func NewAnnouncer(port int, id utils.PeerIdentity, codephrase string) (*Sender, 
 		DeviceName:   id.DeviceName,
 		SessionID:    id.SessionID,
 		TransferPort: port,
-		Codephrase:   codephrase,
 	})
 }
 
@@ -130,7 +128,6 @@ func (s *Sender) sendOnIP(ifaceName string, item netif.IPitem) error {
 		SessionID:    s.cfg.SessionID,
 		InterfaceIP:  item.IP.String(),
 		TransferPort: s.cfg.TransferPort,
-		Codephrase:   s.cfg.Codephrase,
 	}
 
 	payload, err := msg.EncodeMsgpack()

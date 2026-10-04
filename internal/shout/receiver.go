@@ -18,7 +18,6 @@ type DiscoveredDevice struct {
 	SessionID    string    `json:"session_id"`
 	InterfaceIP  string    `json:"interface_ip"`
 	TransferPort int       `json:"transfer_port"`
-	Codephrase   string    `json:"codephrase,omitempty"`
 	Endpoints    []string  `json:"endpoints,omitempty"`
 	IsIPv6       bool      `json:"is_ipv6"`
 	LastSeen     time.Time `json:"last_seen"`
@@ -210,7 +209,6 @@ func (r *Receiver) handleMessage(msg *ShoutMessage) {
 			SessionID:    msg.SessionID,
 			InterfaceIP:  msg.InterfaceIP,
 			TransferPort: msg.TransferPort,
-			Codephrase:   msg.Codephrase,
 			Endpoints:    []string{addrStr},
 			IsIPv6:       incomingIsIPv6,
 			LastSeen:     now,
@@ -223,9 +221,6 @@ func (r *Receiver) handleMessage(msg *ShoutMessage) {
 	existing.LastSeen = now
 	existing.DeviceName = msg.DeviceName
 	existing.SessionID = msg.SessionID
-	if msg.Codephrase != "" {
-		existing.Codephrase = msg.Codephrase
-	}
 
 	hasAddr := false
 	for _, ep := range existing.Endpoints {

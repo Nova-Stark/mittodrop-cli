@@ -12,15 +12,15 @@ import (
 )
 
 // ReceiveFile processes incoming file stream over an established conn.Connection
-func ReceiveFile(ctx context.Context, c *conn.Connection, saveDir string, onProgress ProgressCallback) (*transfer.FileMetadata, error) {
+func ReceiveFile(ctx context.Context, c *conn.Connection, saveDir string, onProgress ProgressCallback, onAccept ...func(transfer.FileMetadata) bool) (*transfer.FileMetadata, error) {
 	if c == nil || c.Conn == nil {
 		return nil, errors.New("transport: nil connection")
 	}
-	return ReceiveFileStream(ctx, c.Conn, c.SessionKey, saveDir, onProgress)
+	return ReceiveFileStream(ctx, c.Conn, c.SessionKey, saveDir, onProgress, onAccept...)
 }
 
 // ReceiveFileStream receives encrypted frames over raw net.Conn, verifies, and stages to disk
-func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byte, saveDir string, onProgress ProgressCallback) (*transfer.FileMetadata, error) {
+func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byte, saveDir string, onProgress ProgressCallback, onAccept ...func(transfer.FileMetadata) bool) (*transfer.FileMetadata, error) {
 	framer, err := NewFramer(netConn, sessionKey)
 	if err != nil {
 		return nil, fmt.Errorf("transport: init framer: %w", err)
@@ -42,6 +42,14 @@ func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byt
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
 		_ = framer.WriteFrame(MsgAbort, []byte("invalid metadata json"))
 		return nil, fmt.Errorf("transport: unmarshal metadata: %w", err)
+	}
+
+	// If an acceptance hook is provided (e.g. for user confirmation or token check), invoke it now
+	if len(onAccept) > 0 && onAccept[0] != nil {
+		if !onAccept[0](meta) {
+			_ = framer.WriteFrame(MsgAbort, []byte("transfer rejected by receiver"))
+			return nil, errors.New("transport: transfer rejected by receiver")
+		}
 	}
 
 	// 2. Prepare staging writer

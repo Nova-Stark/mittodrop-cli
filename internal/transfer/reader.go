@@ -131,8 +131,21 @@ func NewReader(ctx context.Context, filePath string, cfg ...ReaderConfig) (*Read
 	return r, nil
 }
 
+// SetTransferInfo sets sender metadata such as sender name, token, and batch details.
+func (r *Reader) SetTransferInfo(senderName, token, batchID string, batchIndex, batchTotal int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.meta.SenderName = senderName
+	r.meta.Token = token
+	r.meta.BatchID = batchID
+	r.meta.BatchIndex = batchIndex
+	r.meta.BatchTotal = batchTotal
+}
+
 // Metadata returns the file transfer metadata and checksum.
 func (r *Reader) Metadata() FileMetadata {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.meta
 }
 

@@ -28,6 +28,33 @@ func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// 1. Verify token if configured
+	senderToken := req.Header.Get("X-LinkShare-Token")
+	if senderToken == "" {
+		senderToken = req.URL.Query().Get("token")
+	}
+	if senderToken == "" {
+		authHeader := req.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			senderToken = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+	}
+
+	authed := (r.token != "" && senderToken == r.token)
+	if r.token != "" && !authed {
+		http.Error(w, "unauthorized: invalid or missing linkshare token", http.StatusUnauthorized)
+		return
+	}
+
+	clientAddr := req.RemoteAddr
+	senderName := req.Header.Get("X-Sender-Name")
+	if senderName == "" {
+		senderName = "Client"
+	}
+	if r.cfg.OnConnect != nil {
+		r.cfg.OnConnect(senderName, clientAddr, authed)
+	}
+
 	contentType := req.Header.Get("Content-Type")
 
 	var results []UploadResult
@@ -45,9 +72,14 @@ func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Terminal success log
+	// Terminal success log (pure ASCII)
 	for _, res := range results {
-		fmt.Printf("[✓] Received: %s (%s)\n", res.Filename, formatByteSize(res.Bytes))
+		savePath := filepath.Join(r.cfg.SaveDir, res.Filename)
+		if r.cfg.OnComplete != nil {
+			r.cfg.OnComplete(senderName, res.Filename, savePath)
+		} else {
+			fmt.Printf("[COMPLETE] [%s] %s (%s) -> %s\n", senderName, res.Filename, formatByteSize(res.Bytes), savePath)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -124,7 +156,7 @@ func (r *Receiver) saveStreamToWriter(body io.Reader, filename string, declaredS
 		Checksum: expectedChecksum,
 	}
 
-	writer, err := transfer.NewWriter(r.cfg.SaveDir, meta)
+	writer, err := transfer.NewWriter(r.cfg.SaveDir, meta, transfer.WithOverwrite(r.cfg.Overwrite))
 	if err != nil {
 		return UploadResult{}, fmt.Errorf("init transfer writer: %w", err)
 	}
@@ -165,7 +197,7 @@ func (r *Receiver) saveStreamToWriter(body io.Reader, filename string, declaredS
 	}
 
 	return UploadResult{
-		Filename: cleanName,
+		Filename: filepath.Base(writer.TargetPath()),
 		Bytes:    totalWritten,
 	}, nil
 }

@@ -129,7 +129,6 @@ func TestIntegration_Shout_ReceiverSendsFileToSender(t *testing.T) {
 		SessionID:    idA.SessionID,
 		InterfaceIP:  "127.0.0.1",
 		TransferPort: actualPort,
-		Codephrase:   codephrase,
 	}
 	beaconBytes, err := beaconMsg.EncodeMsgpack()
 	if err != nil {
@@ -166,7 +165,7 @@ func TestIntegration_Shout_ReceiverSendsFileToSender(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		time.Sleep(40 * time.Millisecond)
-		sErr = transport.SendToDevice(ctx, discoveredDev, codephrase, idB, srcPath, nil)
+		sErr = shout.SendToDevice(ctx, discoveredDev, codephrase, idB, srcPath, nil)
 	}()
 
 	wg.Wait()

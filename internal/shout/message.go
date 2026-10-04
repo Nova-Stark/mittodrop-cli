@@ -14,7 +14,6 @@ type ShoutMessage struct {
 	SessionID    string `json:"session_id" msgpack:"session_id"`
 	InterfaceIP  string `json:"interface_ip" msgpack:"interface_ip"`
 	TransferPort int    `json:"transfer_port" msgpack:"transfer_port"`
-	Codephrase   string `json:"codephrase,omitempty" msgpack:"codephrase,omitempty"`
 }
 
 func (m *ShoutMessage) Validate() error {

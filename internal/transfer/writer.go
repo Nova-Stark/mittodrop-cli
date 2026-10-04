@@ -2,6 +2,8 @@ package transfer
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -13,11 +15,22 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+// WriterOption configures a Writer.
+type WriterOption func(*Writer)
+
+// WithOverwrite configures whether existing destination files should be overwritten.
+func WithOverwrite(overwrite bool) WriterOption {
+	return func(w *Writer) {
+		w.overwrite = overwrite
+	}
+}
+
 // Writer stages, decompresses, and writes received chunks to disk atomically.
 type Writer struct {
 	meta        FileMetadata
 	targetPath  string
 	stagingPath string
+	overwrite   bool
 	file        *os.File
 	decoder     *zstd.Decoder
 	decompPool  sync.Pool
@@ -28,8 +41,8 @@ type Writer struct {
 }
 
 // NewWriter initializes a Writer for incoming file transfer.
-// It verifies destination path safety, creates a `.mittodrop` staging file, and pre-allocates disk space.
-func NewWriter(saveDir string, meta FileMetadata) (*Writer, error) {
+// It verifies destination path safety, creates a unique `.mittodrop` staging file, and pre-allocates disk space.
+func NewWriter(saveDir string, meta FileMetadata, opts ...WriterOption) (*Writer, error) {
 	if meta.Name == "" {
 		return nil, errors.New("transfer: empty file name in metadata")
 	}
@@ -55,14 +68,16 @@ func NewWriter(saveDir string, meta FileMetadata) (*Writer, error) {
 		return nil, fmt.Errorf("transfer: create save dir: %w", err)
 	}
 
-	stagingPath := targetPath + ".mittodrop"
+	// 2. Create unique staging file
+	var nonce [8]byte
+	_, _ = rand.Read(nonce[:])
+	stagingPath := filepath.Join(absSaveDir, fmt.Sprintf(".mittodrop-%s-%s.tmp", cleanName, hex.EncodeToString(nonce[:])))
 
 	mode := os.FileMode(meta.Mode)
 	if mode == 0 {
 		mode = 0644
 	}
 
-	// 2. Create staging file
 	f, err := os.OpenFile(stagingPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, mode)
 	if err != nil {
 		return nil, fmt.Errorf("transfer: create staging file: %w", err)
@@ -101,6 +116,9 @@ func NewWriter(saveDir string, meta FileMetadata) (*Writer, error) {
 				return &b
 			},
 		},
+	}
+	for _, opt := range opts {
+		opt(w)
 	}
 
 	return w, nil
@@ -206,8 +224,37 @@ func (w *Writer) Finish(expectedChecksum [32]byte) error {
 		_ = os.Chtimes(w.stagingPath, modTime, modTime)
 	}
 
-	// 5. Atomically rename to final destination
-	if err := os.Rename(w.stagingPath, w.targetPath); err != nil {
+	// 5. Collision handling & atomic commit
+	finalPath := w.targetPath
+	if !w.overwrite {
+		if _, err := os.Stat(finalPath); err == nil {
+			// Destination file exists: check if checksum matches
+			existingFile, openErr := os.Open(finalPath)
+			if openErr == nil {
+				existingSum, hashErr := CalculateChecksum(existingFile)
+				existingFile.Close()
+				if hashErr == nil && bytes.Equal(existingSum[:], computedChecksum[:]) {
+					// Identical file already exists on disk; clean up staging file
+					_ = os.Remove(w.stagingPath)
+					return nil
+				}
+			}
+
+			// Different content: auto-disambiguate name -> name (1).ext
+			ext := filepath.Ext(w.targetPath)
+			base := strings.TrimSuffix(w.targetPath, ext)
+			for i := 1; ; i++ {
+				candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
+				if _, err := os.Stat(candidate); os.IsNotExist(err) {
+					finalPath = candidate
+					break
+				}
+			}
+		}
+	}
+	w.targetPath = finalPath
+
+	if err := os.Rename(w.stagingPath, finalPath); err != nil {
 		_ = os.Remove(w.stagingPath)
 		return fmt.Errorf("transfer: atomic rename: %w", err)
 	}

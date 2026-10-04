@@ -29,9 +29,14 @@ type FileMetadata struct {
 	Size        int64    `json:"size"`         // Total file size in bytes
 	Mode        uint32   `json:"mode"`         // File mode / permissions
 	ModTime     int64    `json:"mod_time"`     // Unix nano modification timestamp
-	Checksum    [32]byte `json:"checksum"`     // SHA-256 checksum of the entire uncompressed file
-	ChunkSize   uint32   `json:"chunk_size"`   // Chunk size used for this transfer
-	TotalChunks uint64   `json:"total_chunks"` // Total number of chunks
+	Checksum    [32]byte `json:"checksum"`               // SHA-256 checksum of the entire uncompressed file
+	ChunkSize   uint32   `json:"chunk_size"`             // Chunk size used for this transfer
+	TotalChunks uint64   `json:"total_chunks"`           // Total number of chunks
+	SenderName  string   `json:"sender_name,omitempty"`  // Display name of sender
+	Token       string   `json:"token,omitempty"`        // Authorization token
+	BatchID     string   `json:"batch_id,omitempty"`     // Identifier for multi-file batch
+	BatchIndex  int      `json:"batch_index,omitempty"`  // Index in batch (1-based)
+	BatchTotal  int      `json:"batch_total,omitempty"`  // Total files in batch
 }
 
 // CalculateChecksum computes the SHA-256 checksum of an open file.

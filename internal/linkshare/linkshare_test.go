@@ -292,3 +292,144 @@ func TestReceiver_BrowserGzipAndChecksumUpload(t *testing.T) {
 		t.Fatalf("bad_doc.txt was saved despite checksum mismatch")
 	}
 }
+
+func TestReceiver_TokenEnforcement(t *testing.T) {
+	tempDir := t.TempDir()
+	token := "auth-token-123"
+
+	rcv, err := NewReceiver(ReceiverConfig{
+		DeviceID:   "test-dev",
+		DeviceName: "test-receiver",
+		SessionID:  "test-sess",
+		SaveDir:    tempDir,
+		Port:       0,
+		Token:      token,
+	})
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = rcv.Start(ctx)
+	}()
+
+	select {
+	case <-rcv.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver failed to start")
+	}
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", rcv.Port())
+
+	// 1. Upload without token should fail with 401
+	bodyNoToken := bytes.NewReader([]byte("no token content"))
+	reqNoToken, _ := http.NewRequest(http.MethodPost, baseURL+"/upload", bodyNoToken)
+	reqNoToken.Header.Set("X-File-Name", "no_token.txt")
+	respNoToken, err := http.DefaultClient.Do(reqNoToken)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	respNoToken.Body.Close()
+	if respNoToken.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status without token = %d, want 401", respNoToken.StatusCode)
+	}
+
+	// 2. Upload with wrong token should fail with 401
+	bodyWrongToken := bytes.NewReader([]byte("wrong token content"))
+	reqWrongToken, _ := http.NewRequest(http.MethodPost, baseURL+"/upload", bodyWrongToken)
+	reqWrongToken.Header.Set("X-File-Name", "wrong_token.txt")
+	reqWrongToken.Header.Set("X-LinkShare-Token", "bad-token")
+	respWrongToken, err := http.DefaultClient.Do(reqWrongToken)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	respWrongToken.Body.Close()
+	if respWrongToken.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status with wrong token = %d, want 401", respWrongToken.StatusCode)
+	}
+
+	// 3. Upload with correct token should succeed with 200
+	bodyValid := bytes.NewReader([]byte("valid authed content"))
+	reqValid, _ := http.NewRequest(http.MethodPost, baseURL+"/upload", bodyValid)
+	reqValid.Header.Set("X-File-Name", "valid.txt")
+	reqValid.Header.Set("X-LinkShare-Token", token)
+	respValid, err := http.DefaultClient.Do(reqValid)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	respValid.Body.Close()
+	if respValid.StatusCode != http.StatusOK {
+		t.Errorf("status with correct token = %d, want 200", respValid.StatusCode)
+	}
+
+	// Verify file saved
+	if _, err := os.Stat(filepath.Join(tempDir, "valid.txt")); err != nil {
+		t.Errorf("valid.txt not saved: %v", err)
+	}
+}
+
+func TestReceiver_AutoDisambiguation(t *testing.T) {
+	tempDir := t.TempDir()
+
+	rcv, err := NewReceiver(ReceiverConfig{
+		DeviceID:   "test-dev",
+		DeviceName: "test-receiver",
+		SessionID:  "test-sess",
+		SaveDir:    tempDir,
+		Port:       0,
+	})
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = rcv.Start(ctx)
+	}()
+
+	select {
+	case <-rcv.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("receiver failed to start")
+	}
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", rcv.Port())
+
+	// 1. Upload first file: note.txt (version 1)
+	req1, _ := http.NewRequest(http.MethodPost, baseURL+"/upload", bytes.NewReader([]byte("Version 1")))
+	req1.Header.Set("X-File-Name", "note.txt")
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("req1: %v", err)
+	}
+	resp1.Body.Close()
+
+	if _, err := os.Stat(filepath.Join(tempDir, "note.txt")); err != nil {
+		t.Fatalf("expected note.txt: %v", err)
+	}
+
+	// 2. Upload second file with SAME name but different content (version 2)
+	req2, _ := http.NewRequest(http.MethodPost, baseURL+"/upload", bytes.NewReader([]byte("Version 2")))
+	req2.Header.Set("X-File-Name", "note.txt")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("req2: %v", err)
+	}
+	resp2.Body.Close()
+
+	// Should have auto-disambiguated to note (1).txt
+	disambiguatedPath := filepath.Join(tempDir, "note (1).txt")
+	data, err := os.ReadFile(disambiguatedPath)
+	if err != nil {
+		t.Fatalf("expected disambiguated note (1).txt: %v", err)
+	}
+	if string(data) != "Version 2" {
+		t.Errorf("content = %q, want 'Version 2'", string(data))
+	}
+}
+

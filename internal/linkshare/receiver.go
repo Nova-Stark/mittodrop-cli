@@ -2,10 +2,13 @@ package linkshare
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,15 +22,21 @@ type ReceiverConfig struct {
 	DeviceID   string // for backwards compatibility
 	DeviceName string
 	SessionID  string
-	SaveDir    string
-	Port       int // 0 to auto-pick candidate port
-	SessionKey [32]byte
+	SaveDir      string
+	Port         int // 0 to auto-pick candidate port
+	SessionKey   [32]byte
+	Token        string // Required access token. If set, uploads must supply matching token.
+	RequireToken bool   // If true and Token is empty, a random token is generated and required.
+	Overwrite    bool   // Overwrite existing files instead of disambiguating
+	OnConnect  func(sender, addr string, authed bool)
+	OnComplete func(sender, filename, path string)
 }
 
 // Receiver runs dual-stack HTTP server for direct link uploads.
 type Receiver struct {
 	cfg        ReceiverConfig
 	port       int
+	token      string
 	listener   net.Listener
 	server     *http.Server
 	links      []NetworkLink
@@ -105,9 +114,17 @@ func NewReceiver(cfg ReceiverConfig) (*Receiver, error) {
 	}
 	actualPort := tcpAddr.Port
 
+	token := cfg.Token
+	if token == "" && cfg.RequireToken {
+		var tokenBytes [3]byte
+		_, _ = rand.Read(tokenBytes[:])
+		token = hex.EncodeToString(tokenBytes[:])
+	}
+
 	r := &Receiver{
 		cfg:      cfg,
 		port:     actualPort,
+		token:    token,
 		listener: ln,
 		links:    ResolveLinks(actualPort),
 		readyCh:  make(chan struct{}),
@@ -130,6 +147,20 @@ func NewReceiver(cfg ReceiverConfig) (*Receiver, error) {
 // Port returns bound port.
 func (r *Receiver) Port() int {
 	return r.port
+}
+
+// Token returns the receiver access token.
+func (r *Receiver) Token() string {
+	return r.token
+}
+
+// CleanURLs returns reachable base URLs without token query parameters.
+func (r *Receiver) CleanURLs() []string {
+	var urls []string
+	for _, l := range r.links {
+		urls = append(urls, strings.TrimRight(l.URL, "/"))
+	}
+	return urls
 }
 
 // Links returns discovered network URLs.
