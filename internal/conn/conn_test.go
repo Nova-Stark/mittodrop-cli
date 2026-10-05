@@ -59,8 +59,8 @@ func TestOrchestrator_Manual(t *testing.T) {
 		t.Fatal("expected discovered endpoints, got 0")
 	}
 
-	// Find any loopback/LAN address and replace host with 127.0.0.1 for local test
-	targetAddr := fmt.Sprintf("127.0.0.1:%s", extractPort(endpoints[0].Address))
+	// Use bound listener port with 127.0.0.1 for local test
+	targetAddr := fmt.Sprintf("127.0.0.1:%d", sl.Port())
 
 	var sConn, rConn *conn.Connection
 	var sErr, rErr error

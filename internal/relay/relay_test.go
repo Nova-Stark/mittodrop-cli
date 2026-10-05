@@ -328,3 +328,159 @@ func TestRelay_EndToEndWithMittodropPAKE(t *testing.T) {
 		t.Fatalf("payload mismatch: got %q", string(decrypted))
 	}
 }
+
+func TestRelay_RoomTTLReaper(t *testing.T) {
+	// Fast TTL of 150ms
+	srv, addr, cancel := startTestRelay(t, relay.WithRoomTTL(150*time.Millisecond))
+	defer func() {
+		cancel()
+		srv.Close()
+	}()
+
+	cli := relay.NewClient()
+	ctx, testCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer testCancel()
+
+	// Peer 1 connects to room and waits
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := cli.Connect(ctx, addr, "", "abandoned-room")
+		errCh <- err
+	}()
+
+	// Wait for TTL reaper to fire (150ms + ticker margin)
+	select {
+	case err := <-errCh:
+		// Expect connection to be closed by reaper
+		if err == nil {
+			t.Fatal("expected abandoned room to be closed by reaper, got nil")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for TTL reaper to clean abandoned room")
+	}
+}
+
+func TestRelay_CapacityEviction(t *testing.T) {
+	// Max 2 waiting rooms
+	srv, addr, cancel := startTestRelay(t, relay.WithMaxWaitingRooms(2))
+	defer func() {
+		cancel()
+		srv.Close()
+	}()
+
+	cli := relay.NewClient()
+	ctx, testCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer testCancel()
+
+	room1Err := make(chan error, 1)
+	go func() {
+		_, err := cli.Connect(ctx, addr, "", "room-1")
+		room1Err <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	go func() {
+		_, _ = cli.Connect(ctx, addr, "", "room-2")
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	// Room 3 exceeds capacity 2 -> Room 1 (oldest) must be evicted and closed
+	go func() {
+		_, _ = cli.Connect(ctx, addr, "", "room-3")
+	}()
+
+	select {
+	case err := <-room1Err:
+		if err == nil {
+			t.Fatal("expected room-1 to be evicted, but connect returned nil")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for oldest room to be evicted on capacity")
+	}
+}
+
+func TestRelay_IPRateLimiter(t *testing.T) {
+	// Limit 2 connections per 1 second
+	srv, addr, cancel := startTestRelay(t, relay.WithRateLimit(2, 1*time.Second))
+	defer func() {
+		cancel()
+		srv.Close()
+	}()
+
+	cli := relay.NewClient()
+	ctx, testCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer testCancel()
+
+	// Connect 1 (ok)
+	go func() {
+		_, _ = cli.Connect(ctx, addr, "", "rate-room-1")
+	}()
+	time.Sleep(30 * time.Millisecond)
+
+	// Connect 2 (ok)
+	go func() {
+		_, _ = cli.Connect(ctx, addr, "", "rate-room-2")
+	}()
+	time.Sleep(30 * time.Millisecond)
+
+	// Connect 3 (must be rejected by rate limiter)
+	_, err := cli.Connect(ctx, addr, "", "rate-room-3")
+	if err == nil {
+		t.Fatal("expected 3rd connection to be rejected by rate limiter, got nil")
+	}
+}
+
+func TestRelay_ActiveTransferSurvivesTTL(t *testing.T) {
+	// Fast TTL of 100ms
+	srv, addr, cancel := startTestRelay(t, relay.WithRoomTTL(100*time.Millisecond))
+	defer func() {
+		cancel()
+		srv.Close()
+	}()
+
+	ctx, testCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer testCancel()
+
+	cli := relay.NewClient()
+	room := "active-transfer-room"
+
+	var conn1, conn2 net.Conn
+	var err1, err2 error
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		conn1, err1 = cli.Connect(ctx, addr, "", room)
+	}()
+	go func() {
+		defer wg.Done()
+		time.Sleep(30 * time.Millisecond)
+		conn2, err2 = cli.Connect(ctx, addr, "", room)
+	}()
+
+	wg.Wait()
+	if err1 != nil || err2 != nil {
+		t.Fatalf("failed pairing: err1=%v, err2=%v", err1, err2)
+	}
+	defer conn1.Close()
+	defer conn2.Close()
+
+	// Sleep 3x the RoomTTL (300ms > 100ms)
+	time.Sleep(300 * time.Millisecond)
+
+	// Active transfer must still be alive and piping data across!
+	testPayload := []byte("active-data-after-ttl-reaped")
+	if err := relay.WriteFrame(conn1, testPayload); err != nil {
+		t.Fatalf("write after TTL failed: %v", err)
+	}
+
+	got, err := relay.ReadFrame(conn2)
+	if err != nil {
+		t.Fatalf("read after TTL failed: %v", err)
+	}
+	if string(got) != string(testPayload) {
+		t.Fatalf("data mismatch after TTL: got %q", string(got))
+	}
+}
+

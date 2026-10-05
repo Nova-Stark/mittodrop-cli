@@ -35,12 +35,30 @@ type Listener struct {
 	closed       bool
 }
 
+// ListenOptions configures the direct manual listener.
+type ListenOptions struct {
+	Codephrase    string
+	PreferredPort int
+	NoUPnP        bool
+}
+
 // Listen starts a TCP listener for manual direct connections.
 // If preferredPort is 0, an available candidate port (42201-42215) is chosen.
 // Also discovers LAN and IPv6 addresses and attempts automatic UPnP router port forwarding.
-func Listen(ctx context.Context, codephrase string, preferredPort int) (*Listener, error) {
+func Listen(ctx context.Context, codephrase string, preferredPort int, opts ...ListenOptions) (*Listener, error) {
 	if codephrase == "" {
 		return nil, errors.New("manual: codephrase is required")
+	}
+
+	var opt ListenOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	if opt.Codephrase == "" {
+		opt.Codephrase = codephrase
+	}
+	if preferredPort > 0 && opt.PreferredPort == 0 {
+		opt.PreferredPort = preferredPort
 	}
 
 	port := preferredPort
@@ -69,22 +87,24 @@ func Listen(ctx context.Context, codephrase string, preferredPort int) (*Listene
 	l.gatherLocalEndpoints()
 
 	// 2. Attempt UPnP-IGD router port forwarding (bounded timeout to avoid blocking)
-	upnpCtx, upnpCancel := context.WithTimeout(ctx, 2*time.Second)
-	defer upnpCancel()
+	if !opt.NoUPnP {
+		upnpCtx, upnpCancel := context.WithTimeout(ctx, 2*time.Second)
+		defer upnpCancel()
 
-	// Find first private IPv4 to pass to UPnP
-	lanIP := l.findFirstLANIPv4()
-	if lanIP != "" {
-		mapping, err := portmap.Forward(upnpCtx, lanIP, actualPort, portmap.ProtocolTCP, "mittodrop-manual")
-		if err == nil {
-			l.upnpMapping = mapping
-			l.endpoints = append([]Endpoint{
-				{
-					Type:        "upnp",
-					Address:     fmt.Sprintf("%s:%d", mapping.ExternalIP, mapping.ExternalPort),
-					Description: "Public Internet (UPnP Router Port Map)",
-				},
-			}, l.endpoints...)
+		// Find first private IPv4 to pass to UPnP
+		lanIP := l.findFirstLANIPv4()
+		if lanIP != "" {
+			mapping, err := portmap.Forward(upnpCtx, lanIP, actualPort, portmap.ProtocolTCP, "mittodrop-manual")
+			if err == nil {
+				l.upnpMapping = mapping
+				l.endpoints = append([]Endpoint{
+					{
+						Type:        "upnp",
+						Address:     fmt.Sprintf("%s:%d", mapping.ExternalIP, mapping.ExternalPort),
+						Description: "Public Internet (UPnP Router Port Map)",
+					},
+				}, l.endpoints...)
+			}
 		}
 	}
 
@@ -127,7 +147,6 @@ func (l *Listener) Accept(ctx context.Context, local ...utils.PeerIdentity) (net
 
 	select {
 	case <-ctx.Done():
-		l.Close()
 		return nil, [32]byte{}, utils.PeerIdentity{}, ctx.Err()
 	case res := <-ch:
 		if res.err != nil {

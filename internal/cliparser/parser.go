@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Parse inspects CLI arguments, routes to appropriate command parser,
@@ -97,6 +98,87 @@ func Parse(args []string, warnFn func(string)) (*ParsedCommand, error) {
 
 		default:
 			return nil, fmt.Errorf("cliparser: unknown linkshare subcommand %q (valid: serve, send)", subArgs[0])
+		}
+
+	case "otin":
+		if len(subArgs) == 0 {
+			return nil, errors.New("cliparser: otin requires a subcommand: 'send' or 'rec'")
+		}
+		switch subArgs[0] {
+		case "send":
+			cfg, err := parseOtinSendArgs(subArgs[1:], warnFn)
+			if err != nil {
+				return nil, err
+			}
+			return &ParsedCommand{
+				Action:   ActionOtinSend,
+				OtinSend: cfg,
+			}, nil
+		case "rec", "receive":
+			cfg, err := parseOtinRecArgs(subArgs[1:])
+			if err != nil {
+				return nil, err
+			}
+			return &ParsedCommand{
+				Action:  ActionOtinRec,
+				OtinRec: cfg,
+			}, nil
+		case "relay":
+			relayArgs := subArgs[1:]
+			if len(relayArgs) > 0 && (relayArgs[0] == "serve" || relayArgs[0] == "server") {
+				relayArgs = relayArgs[1:]
+			}
+			cfg, err := parseRelayServeArgs(relayArgs)
+			if err != nil {
+				return nil, err
+			}
+			return &ParsedCommand{
+				Action:     ActionRelayServe,
+				RelayServe: cfg,
+			}, nil
+		default:
+			return nil, fmt.Errorf("cliparser: unknown otin subcommand %q (valid: send, rec, relay)", subArgs[0])
+		}
+
+	case "relay":
+		relayArgs := subArgs
+		if len(subArgs) > 0 && (subArgs[0] == "serve" || subArgs[0] == "server") {
+			relayArgs = subArgs[1:]
+		}
+		cfg, err := parseRelayServeArgs(relayArgs)
+		if err != nil {
+			return nil, err
+		}
+		return &ParsedCommand{
+			Action:     ActionRelayServe,
+			RelayServe: cfg,
+		}, nil
+
+	case "direct", "manual":
+		if len(subArgs) == 0 {
+			return nil, fmt.Errorf("cliparser: %s requires a subcommand: 'send' or 'rec'", cmd)
+		}
+		switch subArgs[0] {
+		case "send":
+			cfg, err := parseDirectSendArgs(subArgs[1:], warnFn)
+			if err != nil {
+				return nil, err
+			}
+			return &ParsedCommand{
+				Action:     ActionDirectSend,
+				DirectSend: cfg,
+			}, nil
+		case "rec", "receive":
+			cfg, err := parseDirectRecArgs(subArgs[1:])
+			if err != nil {
+				return nil, err
+			}
+			return &ParsedCommand{
+				Action:    ActionDirectRec,
+				DirectRec: cfg,
+			}, nil
+		default:
+			return nil, fmt.Errorf("cliparser: unknown %s subcommand %q (valid: send, rec)", cmd, subArgs[0])
 		}
 
 	default:
@@ -504,3 +586,455 @@ func ExtractAndNormalizeURL(raw string) (string, string, error) {
 
 	return cleanURL, token, nil
 }
+
+func parseOtinSendArgs(args []string, warnFn func(string)) (*OtinSendConfig, error) {
+	cfg := &OtinSendConfig{}
+	var rawFiles []string
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		switch {
+		case arg == "-a" || arg == "--addr" || arg == "--address" || arg == "-u" || arg == "--target":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a receiver address", arg)
+			}
+			cfg.Addr = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-a=") || strings.HasPrefix(arg, "--addr=") || strings.HasPrefix(arg, "--address=") ||
+			strings.HasPrefix(arg, "-u=") || strings.HasPrefix(arg, "--target="):
+			cfg.Addr = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "-c" || arg == "--code" || arg == "--codephrase":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a codephrase", arg)
+			}
+			cfg.Codephrase = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "--code=") || strings.HasPrefix(arg, "--codephrase="):
+			cfg.Codephrase = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "-r" || arg == "--relay":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a relay server address (host:port)", arg)
+			}
+			cfg.RelayAddr = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-r=") || strings.HasPrefix(arg, "--relay="):
+			cfg.RelayAddr = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "--relay-pass" || arg == "--relay-password":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a password string", arg)
+			}
+			cfg.RelayPassword = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "--relay-pass=") || strings.HasPrefix(arg, "--relay-password="):
+			cfg.RelayPassword = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "-f" || arg == "--file" || arg == "--files":
+			i++
+			for i < len(args) && !strings.HasPrefix(args[i], "-") {
+				rawFiles = append(rawFiles, args[i])
+				i++
+			}
+
+		case !strings.HasPrefix(arg, "-"):
+			rawFiles = append(rawFiles, arg)
+			i++
+
+		default:
+			return nil, fmt.Errorf("cliparser: unrecognized flag %q", arg)
+		}
+	}
+
+	if len(rawFiles) == 0 {
+		return nil, errors.New("cliparser: no files specified to send (use -f or positional files)")
+	}
+
+	validFiles := filterValidFiles(rawFiles, warnFn)
+	if len(validFiles) == 0 {
+		return nil, errors.New("cliparser: no valid files to send")
+	}
+
+	cfg.Files = validFiles
+	return cfg, nil
+}
+
+func parseOtinRecArgs(args []string) (*OtinRecConfig, error) {
+	cfg := &OtinRecConfig{
+		Dir:  ".",
+		Port: 42201,
+	}
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		switch {
+		case arg == "-r" || arg == "--relay":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a relay server address (host:port)", arg)
+			}
+			cfg.RelayAddr = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-r=") || strings.HasPrefix(arg, "--relay="):
+			cfg.RelayAddr = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "--relay-pass" || arg == "--relay-password":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a password string", arg)
+			}
+			cfg.RelayPassword = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "--relay-pass=") || strings.HasPrefix(arg, "--relay-password="):
+			cfg.RelayPassword = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "-d" || arg == "--dir" || arg == "--output":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a directory path", arg)
+			}
+			cfg.Dir = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-d=") || strings.HasPrefix(arg, "--dir=") || strings.HasPrefix(arg, "--output="):
+			cfg.Dir = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "-p" || arg == "--port":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a port number", arg)
+			}
+			port, err := strconv.Atoi(args[i+1])
+			if err != nil || port < 0 || port > 65535 {
+				return nil, fmt.Errorf("cliparser: invalid port %q", args[i+1])
+			}
+			cfg.Port = port
+			i += 2
+
+		case strings.HasPrefix(arg, "-p=") || strings.HasPrefix(arg, "--port="):
+			val := arg[strings.Index(arg, "=")+1:]
+			port, err := strconv.Atoi(val)
+			if err != nil || port < 0 || port > 65535 {
+				return nil, fmt.Errorf("cliparser: invalid port %q", val)
+			}
+			cfg.Port = port
+			i++
+
+		case arg == "-c" || arg == "--code" || arg == "--codephrase":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a codephrase", arg)
+			}
+			cfg.Codephrase = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "--code=") || strings.HasPrefix(arg, "--codephrase="):
+			cfg.Codephrase = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		default:
+			return nil, fmt.Errorf("cliparser: unrecognized flag %q", arg)
+		}
+	}
+
+	return cfg, nil
+}
+
+func parseRelayServeArgs(args []string) (*RelayServeConfig, error) {
+	cfg := &RelayServeConfig{
+		Host:            "0.0.0.0",
+		Port:            9007,
+		Banner:          "mittodrop-relay",
+		RoomTTL:         30 * time.Minute,
+		MaxWaitingRooms: 1000,
+		RateLimit:       60,
+		RateWindow:      1 * time.Minute,
+	}
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		switch {
+		case arg == "-p" || arg == "--port":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a port number", arg)
+			}
+			p, err := strconv.Atoi(args[i+1])
+			if err != nil || p <= 0 || p > 65535 {
+				return nil, fmt.Errorf("cliparser: invalid port %q", args[i+1])
+			}
+			cfg.Port = p
+			i += 2
+
+		case strings.HasPrefix(arg, "-p=") || strings.HasPrefix(arg, "--port="):
+			val := arg[strings.Index(arg, "=")+1:]
+			p, err := strconv.Atoi(val)
+			if err != nil || p <= 0 || p > 65535 {
+				return nil, fmt.Errorf("cliparser: invalid port %q", val)
+			}
+			cfg.Port = p
+			i++
+
+		case arg == "-h" || arg == "--host" || arg == "--bind":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a host address", arg)
+			}
+			cfg.Host = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-h=") || strings.HasPrefix(arg, "--host=") || strings.HasPrefix(arg, "--bind="):
+			cfg.Host = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "--pass" || arg == "--password":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a password string", arg)
+			}
+			cfg.Password = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "--pass=") || strings.HasPrefix(arg, "--password="):
+			cfg.Password = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "--banner":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a banner string", arg)
+			}
+			cfg.Banner = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "--banner="):
+			cfg.Banner = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "--ttl":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a duration (e.g. 30m, 1h)", arg)
+			}
+			d, err := time.ParseDuration(args[i+1])
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("cliparser: invalid ttl duration %q", args[i+1])
+			}
+			cfg.RoomTTL = d
+			i += 2
+
+		case strings.HasPrefix(arg, "--ttl="):
+			val := arg[strings.Index(arg, "=")+1:]
+			d, err := time.ParseDuration(val)
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("cliparser: invalid ttl duration %q", val)
+			}
+			cfg.RoomTTL = d
+			i++
+
+		case arg == "--max-rooms":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a number", arg)
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("cliparser: invalid max-rooms %q", args[i+1])
+			}
+			cfg.MaxWaitingRooms = n
+			i += 2
+
+		case strings.HasPrefix(arg, "--max-rooms="):
+			val := arg[strings.Index(arg, "=")+1:]
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("cliparser: invalid max-rooms %q", val)
+			}
+			cfg.MaxWaitingRooms = n
+			i++
+
+		case arg == "--rate-limit":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a number", arg)
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("cliparser: invalid rate-limit %q", args[i+1])
+			}
+			cfg.RateLimit = n
+			i += 2
+
+		case strings.HasPrefix(arg, "--rate-limit="):
+			val := arg[strings.Index(arg, "=")+1:]
+			n, err := strconv.Atoi(val)
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("cliparser: invalid rate-limit %q", val)
+			}
+			cfg.RateLimit = n
+			i++
+
+		case arg == "--rate-window":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a duration (e.g. 1m, 10s)", arg)
+			}
+			d, err := time.ParseDuration(args[i+1])
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("cliparser: invalid rate-window duration %q", args[i+1])
+			}
+			cfg.RateWindow = d
+			i += 2
+
+		case strings.HasPrefix(arg, "--rate-window="):
+			val := arg[strings.Index(arg, "=")+1:]
+			d, err := time.ParseDuration(val)
+			if err != nil || d <= 0 {
+				return nil, fmt.Errorf("cliparser: invalid rate-window duration %q", val)
+			}
+			cfg.RateWindow = d
+			i++
+
+		default:
+			return nil, fmt.Errorf("cliparser: unrecognized flag %q", arg)
+		}
+	}
+
+	return cfg, nil
+}
+
+func parseDirectSendArgs(args []string, warnFn func(string)) (*DirectSendConfig, error) {
+	cfg := &DirectSendConfig{}
+	var rawFiles []string
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		switch {
+		case arg == "-a" || arg == "--addr" || arg == "--address" || arg == "-u" || arg == "--target":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a receiver address", arg)
+			}
+			cfg.Addr = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-a=") || strings.HasPrefix(arg, "--addr=") || strings.HasPrefix(arg, "--address=") ||
+			strings.HasPrefix(arg, "-u=") || strings.HasPrefix(arg, "--target="):
+			cfg.Addr = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "-c" || arg == "--code" || arg == "--codephrase":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a codephrase", arg)
+			}
+			cfg.Codephrase = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "--code=") || strings.HasPrefix(arg, "--codephrase="):
+			cfg.Codephrase = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "-f" || arg == "--file" || arg == "--files":
+			i++
+			for i < len(args) && !strings.HasPrefix(args[i], "-") {
+				rawFiles = append(rawFiles, args[i])
+				i++
+			}
+
+		case !strings.HasPrefix(arg, "-"):
+			rawFiles = append(rawFiles, arg)
+			i++
+
+		default:
+			return nil, fmt.Errorf("cliparser: unrecognized flag %q", arg)
+		}
+	}
+
+	if cfg.Addr == "" {
+		return nil, errors.New("cliparser: direct send requires a receiver address (-a/--addr)")
+	}
+	if cfg.Codephrase == "" {
+		return nil, errors.New("cliparser: direct send requires a codephrase (-c/--code)")
+	}
+
+	if len(rawFiles) == 0 {
+		return nil, errors.New("cliparser: no files specified to send (use -f or positional files)")
+	}
+
+	validFiles := filterValidFiles(rawFiles, warnFn)
+	if len(validFiles) == 0 {
+		return nil, errors.New("cliparser: no valid files to send")
+	}
+
+	cfg.Files = validFiles
+	return cfg, nil
+}
+
+func parseDirectRecArgs(args []string) (*DirectRecConfig, error) {
+	cfg := &DirectRecConfig{
+		Dir:  ".",
+		Port: 0,
+	}
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		switch {
+		case arg == "-d" || arg == "--dir" || arg == "--output":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a directory path", arg)
+			}
+			cfg.Dir = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-d=") || strings.HasPrefix(arg, "--dir=") || strings.HasPrefix(arg, "--output="):
+			cfg.Dir = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "-p" || arg == "--port":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a port number", arg)
+			}
+			port, err := strconv.Atoi(args[i+1])
+			if err != nil || port < 0 || port > 65535 {
+				return nil, fmt.Errorf("cliparser: invalid port %q", args[i+1])
+			}
+			cfg.Port = port
+			i += 2
+
+		case strings.HasPrefix(arg, "-p=") || strings.HasPrefix(arg, "--port="):
+			val := arg[strings.Index(arg, "=")+1:]
+			port, err := strconv.Atoi(val)
+			if err != nil || port < 0 || port > 65535 {
+				return nil, fmt.Errorf("cliparser: invalid port %q", val)
+			}
+			cfg.Port = port
+			i++
+
+		case arg == "-c" || arg == "--code" || arg == "--codephrase":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("cliparser: %s requires a codephrase string", arg)
+			}
+			cfg.Codephrase = args[i+1]
+			i += 2
+
+		case strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "--code=") || strings.HasPrefix(arg, "--codephrase="):
+			cfg.Codephrase = arg[strings.Index(arg, "=")+1:]
+			i++
+
+		case arg == "--no-upnp":
+			cfg.NoUPnP = true
+			i++
+
+		default:
+			return nil, fmt.Errorf("cliparser: unrecognized flag %q", arg)
+		}
+	}
+
+	return cfg, nil
+}
+

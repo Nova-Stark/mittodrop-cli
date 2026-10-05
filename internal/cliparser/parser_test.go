@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"mittodrop/internal/cliparser"
 )
@@ -188,3 +189,280 @@ func TestParse_LinkShareSend(t *testing.T) {
 		}
 	})
 }
+
+func TestParse_OtinSend(t *testing.T) {
+	tempDir := t.TempDir()
+	f1 := filepath.Join(tempDir, "alpha.txt")
+	_ = os.WriteFile(f1, []byte("data"), 0644)
+
+	t.Run("ValidFlags", func(t *testing.T) {
+		args := []string{"otin", "send", "-a", "tc1-addr123", "-c", "42-guitar-alaska", "-f", f1}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionOtinSend {
+			t.Fatalf("expected ActionOtinSend, got %v", cmd.Action)
+		}
+		cfg := cmd.OtinSend
+		if cfg.Addr != "tc1-addr123" || cfg.Codephrase != "42-guitar-alaska" || len(cfg.Files) != 1 {
+			t.Errorf("unexpected OtinSend config: %+v", cfg)
+		}
+	})
+
+	t.Run("MissingFilesSkipsWithWarning", func(t *testing.T) {
+		missing := filepath.Join(tempDir, "ghost.bin")
+		args := []string{"otin", "send", "-a", "tc1-addr", "-c", "phrase", f1, missing}
+
+		var warnings []string
+		warnFn := func(msg string) {
+			warnings = append(warnings, msg)
+		}
+
+		cmd, err := cliparser.Parse(args, warnFn)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cmd.OtinSend.Files) != 1 || cmd.OtinSend.Files[0] != f1 {
+			t.Errorf("expected only valid file, got %v", cmd.OtinSend.Files)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "ghost.bin") {
+			t.Errorf("expected warning for ghost.bin, got %v", warnings)
+		}
+	})
+
+	t.Run("AllFilesMissingErrors", func(t *testing.T) {
+		missing := filepath.Join(tempDir, "none.bin")
+		args := []string{"otin", "send", "-a", "tc1-addr", "-c", "phrase", "-f", missing}
+		_, err := cliparser.Parse(args, nil)
+		if err == nil {
+			t.Fatal("expected error when all files are missing, got nil")
+		}
+	})
+
+	t.Run("RelayFlag", func(t *testing.T) {
+		args := []string{"otin", "send", "-r", "127.0.0.1:9007", "-c", "phrase", "-f", f1}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.OtinSend.RelayAddr != "127.0.0.1:9007" || cmd.OtinSend.Codephrase != "phrase" {
+			t.Errorf("unexpected OtinSend config: %+v", cmd.OtinSend)
+		}
+	})
+}
+
+func TestParse_OtinRec(t *testing.T) {
+	t.Run("Defaults", func(t *testing.T) {
+		args := []string{"otin", "rec"}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionOtinRec {
+			t.Fatalf("expected ActionOtinRec, got %v", cmd.Action)
+		}
+		cfg := cmd.OtinRec
+		if cfg.Dir != "." || cfg.Port != 42201 || cfg.Codephrase != "" {
+			t.Errorf("unexpected defaults: %+v", cfg)
+		}
+	})
+
+	t.Run("CustomFlags", func(t *testing.T) {
+		args := []string{"otin", "receive", "-d", "/tmp/down", "-p", "50000", "-c", "my-secret-phrase", "-r", "127.0.0.1:9007"}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionOtinRec {
+			t.Fatalf("expected ActionOtinRec, got %v", cmd.Action)
+		}
+		cfg := cmd.OtinRec
+		if cfg.Dir != "/tmp/down" || cfg.Port != 50000 || cfg.Codephrase != "my-secret-phrase" || cfg.RelayAddr != "127.0.0.1:9007" {
+			t.Errorf("unexpected custom flags: %+v", cfg)
+		}
+	})
+
+	t.Run("RelayPasswordFlag", func(t *testing.T) {
+		args := []string{"otin", "rec", "-r", "127.0.0.1:9007", "--relay-pass", "secret123"}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.OtinRec.RelayPassword != "secret123" {
+			t.Errorf("expected RelayPassword 'secret123', got %q", cmd.OtinRec.RelayPassword)
+		}
+	})
+
+	t.Run("RelayMissingArg", func(t *testing.T) {
+		args := []string{"otin", "rec", "-r"}
+		_, err := cliparser.Parse(args, nil)
+		if err == nil {
+			t.Fatal("expected error for missing relay address")
+		}
+	})
+}
+
+func TestParse_RelayServe(t *testing.T) {
+	t.Run("Defaults_MittoRelayServe", func(t *testing.T) {
+		args := []string{"relay", "serve"}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionRelayServe {
+			t.Fatalf("expected ActionRelayServe, got %v", cmd.Action)
+		}
+		cfg := cmd.RelayServe
+		if cfg.Port != 9007 || cfg.Host != "0.0.0.0" || cfg.Banner != "mittodrop-relay" || cfg.Password != "" {
+			t.Errorf("unexpected defaults: %+v", cfg)
+		}
+	})
+
+	t.Run("Defaults_MittoRelayAlias", func(t *testing.T) {
+		args := []string{"relay"}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionRelayServe {
+			t.Fatalf("expected ActionRelayServe, got %v", cmd.Action)
+		}
+	})
+
+	t.Run("Defaults_MittoOtinRelayAlias", func(t *testing.T) {
+		args := []string{"otin", "relay", "serve"}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionRelayServe {
+			t.Fatalf("expected ActionRelayServe, got %v", cmd.Action)
+		}
+	})
+
+	t.Run("CustomFlags", func(t *testing.T) {
+		args := []string{
+			"relay", "serve",
+			"-p", "9999",
+			"-h", "127.0.0.1",
+			"--pass", "super-secret",
+			"--banner", "custom-node",
+			"--ttl", "15m",
+			"--max-rooms", "500",
+			"--rate-limit", "120",
+			"--rate-window", "30s",
+		}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		cfg := cmd.RelayServe
+		if cfg.Port != 9999 || cfg.Host != "127.0.0.1" || cfg.Password != "super-secret" || cfg.Banner != "custom-node" {
+			t.Errorf("unexpected custom flags: %+v", cfg)
+		}
+		if cfg.RoomTTL != 15*time.Minute || cfg.MaxWaitingRooms != 500 || cfg.RateLimit != 120 || cfg.RateWindow != 30*time.Second {
+			t.Errorf("unexpected policy flags: %+v", cfg)
+		}
+	})
+
+	t.Run("InvalidPort", func(t *testing.T) {
+		args := []string{"relay", "serve", "-p", "invalid"}
+		_, err := cliparser.Parse(args, nil)
+		if err == nil {
+			t.Fatal("expected error for invalid port")
+		}
+	})
+
+	t.Run("InvalidTTL", func(t *testing.T) {
+		args := []string{"relay", "serve", "--ttl", "notaduration"}
+		_, err := cliparser.Parse(args, nil)
+		if err == nil {
+			t.Fatal("expected error for invalid ttl")
+		}
+	})
+}
+
+func TestParse_Direct(t *testing.T) {
+	tempDir := t.TempDir()
+	f1 := filepath.Join(tempDir, "data.bin")
+	_ = os.WriteFile(f1, []byte("payload"), 0644)
+
+	t.Run("DirectRecDefault", func(t *testing.T) {
+		args := []string{"direct", "rec"}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionDirectRec {
+			t.Fatalf("expected ActionDirectRec, got %v", cmd.Action)
+		}
+		cfg := cmd.DirectRec
+		if cfg.Dir != "." || cfg.Port != 0 || cfg.NoUPnP != false || cfg.Codephrase != "" {
+			t.Errorf("unexpected defaults: %+v", cfg)
+		}
+	})
+
+	t.Run("ManualRecAliasWithFlags", func(t *testing.T) {
+		args := []string{"manual", "receive", "-d", "/tmp/recv", "-p", "42205", "-c", "lake-forest-mountain", "--no-upnp"}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionDirectRec {
+			t.Fatalf("expected ActionDirectRec, got %v", cmd.Action)
+		}
+		cfg := cmd.DirectRec
+		if cfg.Dir != "/tmp/recv" || cfg.Port != 42205 || cfg.Codephrase != "lake-forest-mountain" || !cfg.NoUPnP {
+			t.Errorf("unexpected parsed config: %+v", cfg)
+		}
+	})
+
+	t.Run("DirectSendWithPositionalFiles", func(t *testing.T) {
+		args := []string{"direct", "send", "-a", "192.168.1.50:42201", "-c", "lake-forest-mountain", f1}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionDirectSend {
+			t.Fatalf("expected ActionDirectSend, got %v", cmd.Action)
+		}
+		cfg := cmd.DirectSend
+		if cfg.Addr != "192.168.1.50:42201" || cfg.Codephrase != "lake-forest-mountain" || len(cfg.Files) != 1 || cfg.Files[0] != f1 {
+			t.Errorf("unexpected send config: %+v", cfg)
+		}
+	})
+
+	t.Run("ManualSendAliasWithFlagFiles", func(t *testing.T) {
+		args := []string{"manual", "send", "--addr=127.0.0.1:42201", "--code=code-123", "-f", f1}
+		cmd, err := cliparser.Parse(args, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cmd.Action != cliparser.ActionDirectSend {
+			t.Fatalf("expected ActionDirectSend, got %v", cmd.Action)
+		}
+		cfg := cmd.DirectSend
+		if cfg.Addr != "127.0.0.1:42201" || cfg.Codephrase != "code-123" || len(cfg.Files) != 1 {
+			t.Errorf("unexpected send config: %+v", cfg)
+		}
+	})
+
+	t.Run("DirectSendMissingAddr", func(t *testing.T) {
+		args := []string{"direct", "send", "-c", "some-code", f1}
+		_, err := cliparser.Parse(args, nil)
+		if err == nil {
+			t.Fatal("expected error for missing address")
+		}
+	})
+
+	t.Run("DirectSendMissingCode", func(t *testing.T) {
+		args := []string{"direct", "send", "-a", "127.0.0.1:42201", f1}
+		_, err := cliparser.Parse(args, nil)
+		if err == nil {
+			t.Fatal("expected error for missing codephrase")
+		}
+	})
+}
+
+

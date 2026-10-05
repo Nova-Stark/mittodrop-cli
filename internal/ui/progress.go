@@ -232,6 +232,19 @@ func (p *MultiPrinter) PrintComplete(sender, filename, savePath string) {
 	fmt.Fprint(p.out, line)
 }
 
+// PrintError prints an error tag message.
+func (p *MultiPrinter) PrintError(format string, a ...any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	msg := fmt.Sprintf(format, a...)
+	line := fmt.Sprintf("[ERROR] %s\n", msg)
+	if p.prompting {
+		p.buffer = append(p.buffer, line)
+		return
+	}
+	fmt.Fprint(p.out, line)
+}
+
 // PrintSnapshot prints an active transfer progress snapshot.
 func (p *MultiPrinter) PrintSnapshot(snap Snapshot) {
 	p.mu.Lock()
@@ -245,3 +258,4 @@ func (p *MultiPrinter) PrintSnapshot(snap Snapshot) {
 		fmt.Fprintln(p.out)
 	}
 }
+
