@@ -41,6 +41,7 @@ type Framer struct {
 	conn    net.Conn
 	aead    cipher.AEAD
 	sendSeq atomic.Uint64
+	recvSeq atomic.Uint64
 	salt    [4]byte
 }
 
@@ -124,6 +125,11 @@ func (f *Framer) ReadFrame() (MsgType, []byte, error) {
 
 	var nonce [GCMNonceSize]byte
 	copy(nonce[:], header[7:19])
+	seq := binary.BigEndian.Uint64(nonce[0:8])
+	lastSeq := f.recvSeq.Load()
+	if seq <= lastSeq {
+		return 0, nil, fmt.Errorf("transport: replayed or out-of-order frame (seq %d <= %d)", seq, lastSeq)
+	}
 
 	ciphertext := make([]byte, payloadLen)
 	if _, err := io.ReadFull(f.conn, ciphertext); err != nil {
@@ -135,6 +141,7 @@ func (f *Framer) ReadFrame() (MsgType, []byte, error) {
 	if err != nil {
 		return 0, nil, fmt.Errorf("transport: gcm auth decrypt failed: %w", err)
 	}
+	f.recvSeq.Store(seq)
 
 	return msgType, plaintext, nil
 }

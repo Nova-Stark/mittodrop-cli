@@ -18,6 +18,18 @@ func (r *Receiver) handleHandshake(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Verify token if configured
+	if r.token != "" {
+		senderToken := req.Header.Get("X-LinkShare-Token")
+		if senderToken == "" {
+			senderToken = req.URL.Query().Get("token")
+		}
+		if senderToken != r.token {
+			http.Error(w, "unauthorized: invalid or missing linkshare token", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	resp := HandshakeResponse{
 		DeviceID:   r.cfg.DeviceID,
 		DeviceName: r.cfg.DeviceName,

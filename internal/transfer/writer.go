@@ -35,6 +35,7 @@ type Writer struct {
 	decoder     *zstd.Decoder
 	decompPool  sync.Pool
 	written     int64
+	chunkLens   map[int64]int64 // bytes written per chunk offset; dedups retransmitted chunks
 	mu          sync.Mutex
 	finished    bool
 	closed      bool
@@ -102,10 +103,13 @@ func NewWriter(saveDir string, meta FileMetadata, opts ...WriterOption) (*Writer
 	chunkCap := meta.ChunkSize
 	if chunkCap == 0 {
 		chunkCap = DefaultChunkSize
+	} else if chunkCap > 4*1024*1024 {
+		chunkCap = 4 * 1024 * 1024
 	}
 
 	w := &Writer{
 		meta:        meta,
+		chunkLens:   make(map[int64]int64),
 		targetPath:  targetPath,
 		stagingPath: stagingPath,
 		file:        f,
@@ -173,11 +177,20 @@ func (w *Writer) WriteChunk(chunk *Chunk) error {
 		}
 	}
 
+	if chunk.Offset < 0 {
+		return fmt.Errorf("transfer: chunk %d has negative offset %d", chunk.Index, chunk.Offset)
+	}
+	if w.meta.Size > 0 && chunk.Offset+int64(len(dataToWrite)) > w.meta.Size {
+		return fmt.Errorf("transfer: chunk %d (offset %d, len %d) exceeds declared file size %d", chunk.Index, chunk.Offset, len(dataToWrite), w.meta.Size)
+	}
+
 	if _, err := w.file.WriteAt(dataToWrite, chunk.Offset); err != nil {
 		return fmt.Errorf("transfer: write chunk %d at offset %d: %w", chunk.Index, chunk.Offset, err)
 	}
 
-	w.written += int64(len(dataToWrite))
+	// A retransmitted chunk at the same offset replaces, not adds to, the byte count.
+	w.written += int64(len(dataToWrite)) - w.chunkLens[chunk.Offset]
+	w.chunkLens[chunk.Offset] = int64(len(dataToWrite))
 	return nil
 }
 

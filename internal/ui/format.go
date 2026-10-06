@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -16,13 +17,13 @@ func FormatBytes(b int64) string {
 		div *= unit
 		exp++
 	}
-	units := []string{"KB", "MB", "GB", "TB"}
+	units := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
 	return fmt.Sprintf("%.1f %s", float64(b)/float64(div), units[exp])
 }
 
 // FormatSpeed converts bytes per second into human-readable speed string (e.g. 24.5 MB/s).
 func FormatSpeed(bytesPerSec float64) string {
-	if bytesPerSec <= 0 {
+	if math.IsNaN(bytesPerSec) || math.IsInf(bytesPerSec, 0) || bytesPerSec <= 0 {
 		return "0 B/s"
 	}
 	const unit = 1024
@@ -65,7 +66,7 @@ func RenderBar(percent float64, width int) string {
 	if width < 5 {
 		width = 20
 	}
-	if percent < 0 {
+	if math.IsNaN(percent) || percent < 0 {
 		percent = 0
 	}
 	if percent > 100 {

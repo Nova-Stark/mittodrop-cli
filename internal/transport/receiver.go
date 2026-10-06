@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"mittodrop/internal/conn"
 	"mittodrop/internal/transfer"
@@ -26,6 +27,16 @@ func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byt
 		return nil, fmt.Errorf("transport: init framer: %w", err)
 	}
 
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = netConn.SetDeadline(time.Now())
+		case <-stopWatch:
+		}
+	}()
+
 	// 1. Read metadata frame
 	msgType, metaBytes, err := framer.ReadFrame()
 	if err != nil {
@@ -42,6 +53,13 @@ func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byt
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
 		_ = framer.WriteFrame(MsgAbort, []byte("invalid metadata json"))
 		return nil, fmt.Errorf("transport: unmarshal metadata: %w", err)
+	}
+
+	// A real SHA-256 is never all zeros; the writer treats zero as "skip verification",
+	// so refuse it here to keep integrity checking mandatory on this path.
+	if meta.Checksum == ([32]byte{}) {
+		_ = framer.WriteFrame(MsgAbort, []byte("missing checksum in metadata"))
+		return nil, errors.New("transport: metadata missing checksum")
 	}
 
 	// If an acceptance hook is provided (e.g. for user confirmation or token check), invoke it now

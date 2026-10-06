@@ -69,7 +69,7 @@ func NewReader(ctx context.Context, filePath string, cfg ...ReaderConfig) (*Read
 	}
 
 	totalChunks := uint64(info.Size() / int64(config.ChunkSize))
-	if info.Size()%int64(config.ChunkSize) != 0 || info.Size() == 0 {
+	if info.Size()%int64(config.ChunkSize) != 0 {
 		totalChunks++
 	}
 

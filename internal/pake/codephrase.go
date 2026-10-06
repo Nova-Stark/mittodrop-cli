@@ -48,7 +48,7 @@ func GenerateCodephrase() (string, error) {
 
 func RoomID(codephrase string) string {
 	parts := strings.Split(strings.TrimSpace(codephrase), "-")
-	if len(parts) > 0 {
+	if len(parts) > 0 && parts[0] != "" {
 		return parts[0]
 	}
 	return codephrase

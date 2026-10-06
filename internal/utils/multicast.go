@@ -1,8 +1,8 @@
 package utils
 
 import (
-	"fmt"
 	"net"
+	"strconv"
 )
 
 type MulticastGroup struct {
@@ -11,7 +11,7 @@ type MulticastGroup struct {
 }
 
 func (g MulticastGroup) String() string {
-	return fmt.Sprintf("%s:%d", g.Address, g.Port)
+	return net.JoinHostPort(g.Address, strconv.Itoa(g.Port))
 }
 
 var DiscoveryGroupV4 = MulticastGroup{Address: "239.255.77.1", Port: 49250}

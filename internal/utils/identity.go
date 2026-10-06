@@ -27,7 +27,11 @@ func (id *PeerIdentity) EnsureValid(defaultName string) error {
 		if defaultName != "" {
 			id.DeviceName = defaultName
 		} else {
-			id.DeviceName = id.DeviceID[:8]
+			n := 8
+			if len(id.DeviceID) < n {
+				n = len(id.DeviceID)
+			}
+			id.DeviceName = id.DeviceID[:n]
 		}
 	}
 	return nil
