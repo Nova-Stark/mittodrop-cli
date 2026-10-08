@@ -1,11 +1,15 @@
 package transfer
 
 import (
+	"archive/tar"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +43,13 @@ type Writer struct {
 	mu          sync.Mutex
 	finished    bool
 	closed      bool
+
+	// Streaming TAR extraction fields (for IsDir == true)
+	isDir       bool
+	saveDir     string
+	pipeWriter  *io.PipeWriter
+	tarDone     chan error
+	tarHasher   hash.Hash
 }
 
 // NewWriter initializes a Writer for incoming file transfer.
@@ -69,6 +80,51 @@ func NewWriter(saveDir string, meta FileMetadata, opts ...WriterOption) (*Writer
 		return nil, fmt.Errorf("transfer: create save dir: %w", err)
 	}
 
+	chunkCap := meta.ChunkSize
+	if chunkCap == 0 {
+		chunkCap = DefaultChunkSize
+	} else if chunkCap > 4*1024*1024 {
+		chunkCap = 4 * 1024 * 1024
+	}
+
+	dec, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, fmt.Errorf("transfer: new zstd decoder: %w", err)
+	}
+
+	// If metadata indicates an on-the-fly streaming directory archive (TAR):
+	if meta.IsDir {
+		pr, pw := io.Pipe()
+		tarDone := make(chan error, 1)
+
+		w := &Writer{
+			meta:        meta,
+			isDir:       true,
+			saveDir:     absSaveDir,
+			targetPath:  targetPath,
+			pipeWriter:  pw,
+			tarDone:     tarDone,
+			tarHasher:   sha256.New(),
+			decoder:     dec,
+			chunkLens:   make(map[int64]int64),
+			decompPool: sync.Pool{
+				New: func() any {
+					b := make([]byte, 0, chunkCap)
+					return &b
+				},
+			},
+		}
+		for _, opt := range opts {
+			opt(w)
+		}
+
+		go func() {
+			tarDone <- extractTarStream(pr, absSaveDir)
+		}()
+
+		return w, nil
+	}
+
 	// 2. Create unique staging file
 	var nonce [8]byte
 	_, _ = rand.Read(nonce[:])
@@ -91,20 +147,6 @@ func NewWriter(saveDir string, meta FileMetadata, opts ...WriterOption) (*Writer
 			_ = os.Remove(stagingPath)
 			return nil, fmt.Errorf("transfer: pre-allocate disk space (%d bytes): %w", meta.Size, err)
 		}
-	}
-
-	dec, err := zstd.NewReader(nil)
-	if err != nil {
-		f.Close()
-		_ = os.Remove(stagingPath)
-		return nil, fmt.Errorf("transfer: new zstd decoder: %w", err)
-	}
-
-	chunkCap := meta.ChunkSize
-	if chunkCap == 0 {
-		chunkCap = DefaultChunkSize
-	} else if chunkCap > 4*1024*1024 {
-		chunkCap = 4 * 1024 * 1024
 	}
 
 	w := &Writer{
@@ -184,8 +226,16 @@ func (w *Writer) WriteChunk(chunk *Chunk) error {
 		return fmt.Errorf("transfer: chunk %d (offset %d, len %d) exceeds declared file size %d", chunk.Index, chunk.Offset, len(dataToWrite), w.meta.Size)
 	}
 
-	if _, err := w.file.WriteAt(dataToWrite, chunk.Offset); err != nil {
-		return fmt.Errorf("transfer: write chunk %d at offset %d: %w", chunk.Index, chunk.Offset, err)
+	if w.isDir {
+		// Feed uncompressed TAR payload into untar stream pipe & update hash
+		if _, err := w.pipeWriter.Write(dataToWrite); err != nil {
+			return fmt.Errorf("transfer: write tar stream: %w", err)
+		}
+		w.tarHasher.Write(dataToWrite)
+	} else {
+		if _, err := w.file.WriteAt(dataToWrite, chunk.Offset); err != nil {
+			return fmt.Errorf("transfer: write chunk %d at offset %d: %w", chunk.Index, chunk.Offset, err)
+		}
 	}
 
 	// A retransmitted chunk at the same offset replaces, not adds to, the byte count.
@@ -201,6 +251,29 @@ func (w *Writer) Finish(expectedChecksum [32]byte) error {
 	defer w.mu.Unlock()
 	if w.closed {
 		return errors.New("transfer: writer is closed")
+	}
+
+	if w.isDir {
+		// Close pipe writer so tar.Reader reaches EOF
+		if w.pipeWriter != nil {
+			_ = w.pipeWriter.Close()
+		}
+
+		// Wait for untar worker to finish
+		err := <-w.tarDone
+		w.closed = true
+		w.finished = true
+		if err != nil {
+			return fmt.Errorf("transfer: extract tar archive: %w", err)
+		}
+
+		var computedChecksum [32]byte
+		copy(computedChecksum[:], w.tarHasher.Sum(nil))
+		var zeroChecksum [32]byte
+		if expectedChecksum != zeroChecksum && !bytes.Equal(computedChecksum[:], expectedChecksum[:]) {
+			return fmt.Errorf("transfer: integrity check failed: expected %x, got %x", expectedChecksum, computedChecksum)
+		}
+		return nil
 	}
 
 	// 1. Flush OS page cache to disk
@@ -295,8 +368,69 @@ func (w *Writer) cleanup() {
 	if w.file != nil {
 		_ = w.file.Close()
 	}
+	if w.isDir && w.pipeWriter != nil {
+		_ = w.pipeWriter.CloseWithError(errors.New("transfer: writer aborted"))
+	}
 	w.closed = true
-	if !w.finished {
+	if !w.finished && w.stagingPath != "" {
 		_ = os.Remove(w.stagingPath)
+	}
+}
+
+func extractTarStream(r io.Reader, destDir string) error {
+	tr := tar.NewReader(r)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("tar read header: %w", err)
+		}
+
+		// Zip-slip security: sanitize target path
+		cleanName := filepath.Clean(filepath.FromSlash(header.Name))
+		if strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) {
+			return fmt.Errorf("tar path traversal detected: %q", header.Name)
+		}
+
+		targetPath := filepath.Join(destDir, cleanName)
+		if !strings.HasPrefix(targetPath, destDir) {
+			return fmt.Errorf("tar path traversal outside target: %q", header.Name)
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, 0755); err != nil {
+				return fmt.Errorf("create dir %q: %w", targetPath, err)
+			}
+
+		case tar.TypeReg:
+			// Ensure parent dir exists
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("create parent dir %q: %w", targetPath, err)
+			}
+
+			mode := header.FileInfo().Mode()
+			if mode == 0 {
+				mode = 0644
+			}
+
+			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, mode)
+			if err != nil {
+				return fmt.Errorf("create file %q: %w", targetPath, err)
+			}
+
+			if _, err := io.Copy(outFile, tr); err != nil {
+				outFile.Close()
+				return fmt.Errorf("write file %q: %w", targetPath, err)
+			}
+			outFile.Close()
+
+			if header.ModTime.Unix() > 0 {
+				_ = os.Chtimes(targetPath, header.ModTime, header.ModTime)
+			}
+		}
 	}
 }

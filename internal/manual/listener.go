@@ -62,17 +62,27 @@ func Listen(ctx context.Context, codephrase string, preferredPort int, opts ...L
 	}
 
 	port := preferredPort
-	if port <= 0 {
-		p, err := utils.FindAvailablePort("0.0.0.0")
+	var ln net.Listener
+	if port > 0 {
+		var err error
+		ln, err = net.Listen("tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
-			return nil, fmt.Errorf("manual: find port: %w", err)
+			return nil, fmt.Errorf("manual: listen on port %d: %w", port, err)
 		}
-		port = p
-	}
-
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		return nil, fmt.Errorf("manual: listen on port %d: %w", port, err)
+	} else {
+		// Try candidate ports first
+		p, err := utils.FindAvailablePort("0.0.0.0")
+		if err == nil {
+			ln, _ = net.Listen("tcp", fmt.Sprintf(":%d", p))
+		}
+		// If candidate ports taken, fall back to ephemeral port
+		if ln == nil {
+			var err error
+			ln, err = net.Listen("tcp", ":0")
+			if err != nil {
+				return nil, fmt.Errorf("manual: listen ephemeral port: %w", err)
+			}
+		}
 	}
 
 	actualPort := ln.Addr().(*net.TCPAddr).Port

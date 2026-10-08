@@ -450,3 +450,68 @@ func TestEdgeApp_DirectSend_CandidateProbing(t *testing.T) {
 		t.Errorf("content mismatch: got %q", string(data))
 	}
 }
+
+func TestEdgeApp_DirectoryStreamDirectRecRejection(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := t.TempDir()
+
+	testDir := filepath.Join(srcDir, "folder_to_reject")
+	_ = os.MkdirAll(testDir, 0755)
+	_ = os.WriteFile(filepath.Join(testDir, "test.txt"), []byte("data"), 0644)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Direct sender connects with mismatched codephrase to trigger handshake failure
+	var recOut bytes.Buffer
+	recApp := app.NewApp(&recOut, nil)
+
+	go func() {
+		_ = recApp.Run(ctx, []string{
+			"direct", "rec",
+			"-c", "correct-phrase-one",
+			"-d", dstDir,
+			"--no-upnp",
+		})
+	}()
+
+	var actualPort string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		lines := strings.Split(recOut.String(), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "Bound Port:") {
+				parts := strings.Fields(line)
+				actualPort = parts[len(parts)-1]
+				break
+			}
+		}
+		if actualPort != "" && strings.Contains(recOut.String(), "Waiting for senders") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if actualPort == "" {
+		t.Fatalf("receiver failed to report port:\n%s", recOut.String())
+	}
+
+	targetAddr := "127.0.0.1:" + actualPort
+	var sendOut bytes.Buffer
+	sendApp := app.NewApp(&sendOut, nil)
+
+	err := sendApp.Run(ctx, []string{
+		"direct", "send",
+		"-a", targetAddr,
+		"-c", "wrong-phrase-two",
+		testDir,
+	})
+	if err == nil {
+		t.Fatal("expected direct directory send to fail with wrong codephrase, got nil")
+	}
+
+	// Verify nothing was extracted
+	if _, err := os.Stat(filepath.Join(dstDir, "folder_to_reject")); err == nil {
+		t.Fatal("rejected folder unexpectedly extracted on receiver")
+	}
+}
+

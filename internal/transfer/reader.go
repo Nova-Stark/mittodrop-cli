@@ -23,7 +23,7 @@ type ReaderConfig struct {
 // Reader streams and adaptively compresses file chunks with a bounded ring buffer queue.
 type Reader struct {
 	cfg       ReaderConfig
-	file      *os.File
+	source    io.ReadCloser
 	meta      FileMetadata
 	encoder   *zstd.Encoder
 	hasher    hash.Hash
@@ -65,7 +65,7 @@ func NewReader(ctx context.Context, filePath string, cfg ...ReaderConfig) (*Read
 	}
 	if info.IsDir() {
 		f.Close()
-		return nil, errors.New("transfer: directories cannot be read directly as a single file")
+		return nil, errors.New("transfer: directories cannot be read directly as a single file; use NewDirReader")
 	}
 
 	totalChunks := uint64(info.Size() / int64(config.ChunkSize))
@@ -96,7 +96,7 @@ func NewReader(ctx context.Context, filePath string, cfg ...ReaderConfig) (*Read
 
 	r := &Reader{
 		cfg:       config,
-		file:      f,
+		source:    f,
 		encoder:   enc,
 		hasher:    sha256.New(),
 		chunkChan: make(chan *Chunk, config.QueueSize),
@@ -193,7 +193,10 @@ func (r *Reader) Close() error {
 	r.closed = true
 	r.cancel()
 	_ = r.encoder.Close()
-	return r.file.Close()
+	if r.source != nil {
+		return r.source.Close()
+	}
+	return nil
 }
 
 func (r *Reader) fillLoop() {
@@ -212,7 +215,7 @@ func (r *Reader) fillLoop() {
 		rawBufPtr := r.rawPool.Get().(*[]byte)
 		rawBuf := *rawBufPtr
 
-		n, err := io.ReadFull(r.file, rawBuf)
+		n, err := io.ReadFull(r.source, rawBuf)
 		if n > 0 {
 			rawSlice := rawBuf[:n]
 

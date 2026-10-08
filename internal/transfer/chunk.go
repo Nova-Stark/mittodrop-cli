@@ -32,6 +32,7 @@ type FileMetadata struct {
 	Checksum    [32]byte `json:"checksum"`               // SHA-256 checksum of the entire uncompressed file
 	ChunkSize   uint32   `json:"chunk_size"`             // Chunk size used for this transfer
 	TotalChunks uint64   `json:"total_chunks"`           // Total number of chunks
+	IsDir       bool     `json:"is_dir,omitempty"`       // True if transfer is a streaming directory archive
 	SenderName  string   `json:"sender_name,omitempty"`  // Display name of sender
 	Token       string   `json:"token,omitempty"`        // Authorization token
 	BatchID     string   `json:"batch_id,omitempty"`     // Identifier for multi-file batch

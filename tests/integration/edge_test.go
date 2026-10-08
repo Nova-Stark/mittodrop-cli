@@ -367,3 +367,99 @@ func TestEdgeIntegration_Relay_MidstreamPeerDisconnect(t *testing.T) {
 		}
 	}
 }
+
+func TestEdgeIntegration_DirectoryStreamOverRelay(t *testing.T) {
+	srv, relayAddr, cancelRelay := startInProcessRelay(t)
+	defer func() {
+		cancelRelay()
+		srv.Close()
+	}()
+
+	codephrase := "dir-relay-integ-pass"
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	sendDir := t.TempDir()
+	recvDir := t.TempDir()
+
+	testFolder := filepath.Join(sendDir, "sample_dir")
+	_ = os.MkdirAll(filepath.Join(testFolder, "sub"), 0755)
+	_ = os.WriteFile(filepath.Join(testFolder, "sub", "doc.txt"), []byte("folder relay test stream"), 0644)
+
+	// Receiver starts session via Relay
+	receiverSession, err := transport.Listen(ctx, conn.Config{
+		Mode:       conn.ModeRelay,
+		RelayAddr:  relayAddr,
+		Codephrase: codephrase,
+		Identity: utils.PeerIdentity{
+			DeviceID:   "dev-relay-rec-dir",
+			DeviceName: "RecvRelayDirBox",
+		},
+	})
+	if err != nil {
+		t.Fatalf("transport.Listen receiver: %v", err)
+	}
+	defer receiverSession.Close()
+
+	var wg sync.WaitGroup
+	var recvMeta *transfer.FileMetadata
+	var senderErr, receiverErr error
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		recvMeta, receiverErr = receiverSession.AcceptAndReceive(ctx, recvDir, nil)
+	}()
+
+	go func() {
+		defer wg.Done()
+		time.Sleep(50 * time.Millisecond)
+
+		c, err := conn.Connect(ctx, conn.Config{
+			Mode:       conn.ModeRelay,
+			RelayAddr:  relayAddr,
+			Codephrase: codephrase,
+			Identity: utils.PeerIdentity{
+				DeviceID:   "dev-relay-send-dir",
+				DeviceName: "SenderRelayDirBox",
+			},
+		})
+		if err != nil {
+			senderErr = fmt.Errorf("connect relay: %w", err)
+			return
+		}
+		defer c.Close()
+
+		dr, err := transfer.NewDirReader(ctx, testFolder)
+		if err != nil {
+			senderErr = fmt.Errorf("new dir reader: %w", err)
+			return
+		}
+		defer dr.Close()
+
+		senderErr = transport.SendFileStream(ctx, c.Conn, c.SessionKey, dr.Reader, nil)
+	}()
+
+	wg.Wait()
+
+	if receiverErr != nil {
+		t.Fatalf("receiver failed: %v", receiverErr)
+	}
+	if senderErr != nil {
+		t.Fatalf("sender failed: %v", senderErr)
+	}
+
+	if recvMeta == nil || !recvMeta.IsDir {
+		t.Fatalf("expected IsDir metadata on receiver: %+v", recvMeta)
+	}
+
+	// Verify extracted file content
+	extractedData, err := os.ReadFile(filepath.Join(recvDir, "sample_dir", "sub", "doc.txt"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(extractedData) != "folder relay test stream" {
+		t.Errorf("content mismatch: got %q", string(extractedData))
+	}
+}
+

@@ -455,10 +455,6 @@ func TestApp_DirectSendAndRecIntegration(t *testing.T) {
 	_ = os.WriteFile(file1, []byte("direct p2p file transfer payload!"), 0644)
 
 	codephrase := "river-sun-crystal"
-	port, err := utils.FindAvailablePort("127.0.0.1")
-	if err != nil {
-		t.Fatalf("find port: %v", err)
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -466,11 +462,10 @@ func TestApp_DirectSendAndRecIntegration(t *testing.T) {
 	var recOut bytes.Buffer
 	recApp := app.NewApp(&recOut, nil)
 
-	// 1. Run direct receiver in background
+	// 1. Run direct receiver in background (auto port selection)
 	go func() {
 		_ = recApp.Run(ctx, []string{
 			"direct", "rec",
-			"-p", strconv.Itoa(port),
 			"-c", codephrase,
 			"-d", dstDir,
 			"--no-upnp",
@@ -504,7 +499,7 @@ func TestApp_DirectSendAndRecIntegration(t *testing.T) {
 	var sendOut bytes.Buffer
 	sendApp := app.NewApp(&sendOut, nil)
 
-	err = sendApp.Run(ctx, []string{
+	err := sendApp.Run(ctx, []string{
 		"direct", "send",
 		"-a", targetAddr,
 		"-c", codephrase,
@@ -524,6 +519,95 @@ func TestApp_DirectSendAndRecIntegration(t *testing.T) {
 		t.Fatalf("content mismatch: got %q", string(data))
 	}
 }
+
+func TestApp_DirectDirectoryRecursiveIntegration(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := t.TempDir()
+
+	// Build nested directory structure
+	// srcDir/
+	//   myfolder/
+	//     hello.txt
+	//     nested/
+	//       inner.dat
+	folder := filepath.Join(srcDir, "myfolder")
+	_ = os.MkdirAll(filepath.Join(folder, "nested"), 0755)
+	_ = os.WriteFile(filepath.Join(folder, "hello.txt"), []byte("hello directory!"), 0644)
+	_ = os.WriteFile(filepath.Join(folder, "nested", "inner.dat"), []byte("inner nested data"), 0644)
+
+	codephrase := "ocean-star-summit"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var recOut bytes.Buffer
+	recApp := app.NewApp(&recOut, nil)
+
+	// 1. Run direct receiver in background
+	go func() {
+		_ = recApp.Run(ctx, []string{
+			"direct", "rec",
+			"-c", codephrase,
+			"-d", dstDir,
+			"--no-upnp",
+		})
+	}()
+
+	// Wait for receiver to indicate waiting and extract bound port
+	var actualPort string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		lines := strings.Split(recOut.String(), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "Bound Port:") {
+				parts := strings.Fields(line)
+				actualPort = parts[len(parts)-1]
+				break
+			}
+		}
+		if actualPort != "" && strings.Contains(recOut.String(), "Waiting for senders") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if actualPort == "" {
+		t.Fatalf("receiver failed to report bound port. Output:\n%s", recOut.String())
+	}
+
+	// 2. Run direct sender passing the folder
+	targetAddr := net.JoinHostPort("127.0.0.1", actualPort)
+	var sendOut bytes.Buffer
+	sendApp := app.NewApp(&sendOut, nil)
+
+	err := sendApp.Run(ctx, []string{
+		"direct", "send",
+		"-a", targetAddr,
+		"-c", codephrase,
+		folder,
+	})
+	if err != nil {
+		t.Fatalf("direct send folder failed: %v", err)
+	}
+
+	// 3. Verify extracted directory and nested files
+	f1Data, err := os.ReadFile(filepath.Join(dstDir, "myfolder", "hello.txt"))
+	if err != nil {
+		t.Fatalf("read hello.txt: %v", err)
+	}
+	if string(f1Data) != "hello directory!" {
+		t.Fatalf("hello.txt content mismatch: %q", string(f1Data))
+	}
+
+	f2Data, err := os.ReadFile(filepath.Join(dstDir, "myfolder", "nested", "inner.dat"))
+	if err != nil {
+		t.Fatalf("read inner.dat: %v", err)
+	}
+	if string(f2Data) != "inner nested data" {
+		t.Fatalf("inner.dat content mismatch: %q", string(f2Data))
+	}
+}
+
 
 
 

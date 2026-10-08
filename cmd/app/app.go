@@ -386,7 +386,7 @@ func (a *App) runShoutSend(ctx context.Context, cfg *cliparser.ShoutSendConfig) 
 		fileBase := filepath.Base(filePath)
 		a.printer.PrintStatus("Sending [%d/%d] %s...", idx+1, totalFiles, fileBase)
 
-		reader, err := transfer.NewReader(ctx, filePath)
+		reader, err := newTransferReader(ctx, filePath)
 		if err != nil {
 			a.printer.PrintWarn("Failed to read file %s: %v", fileBase, err)
 			continue
@@ -757,7 +757,7 @@ func (a *App) runOtinSend(ctx context.Context, cfg *cliparser.OtinSendConfig) er
 			fileBase := filepath.Base(filePath)
 			a.printer.PrintStatus("Sending [%d/%d] %s...", idx+1, totalFiles, fileBase)
 
-			reader, err := transfer.NewReader(ctx, filePath)
+			reader, err := newTransferReader(ctx, filePath)
 			if err != nil {
 				a.printer.PrintWarn("Failed to read file %s: %v", fileBase, err)
 				continue
@@ -820,7 +820,7 @@ func (a *App) runOtinSend(ctx context.Context, cfg *cliparser.OtinSendConfig) er
 		fileBase := filepath.Base(filePath)
 		a.printer.PrintStatus("Sending [%d/%d] %s...", idx+1, totalFiles, fileBase)
 
-		reader, err := transfer.NewReader(ctx, filePath)
+		reader, err := newTransferReader(ctx, filePath)
 		if err != nil {
 			a.printer.PrintWarn("Failed to read file %s: %v", fileBase, err)
 			continue
@@ -1054,7 +1054,7 @@ func (a *App) runDirectSend(ctx context.Context, cfg *cliparser.DirectSendConfig
 		fileBase := filepath.Base(filePath)
 		a.printer.PrintStatus("Sending [%d/%d] %s...", idx+1, totalFiles, fileBase)
 
-		reader, err := transfer.NewReader(ctx, filePath)
+		reader, err := newTransferReader(ctx, filePath)
 		if err != nil {
 			a.printer.PrintWarn("Failed to read file %s: %v", fileBase, err)
 			continue
@@ -1141,4 +1141,19 @@ func generateIdentity() (utils.PeerIdentity, error) {
 		DeviceName: name,
 		SessionID:  sessID,
 	}, nil
+}
+
+func newTransferReader(ctx context.Context, path string) (*transfer.Reader, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if fi.IsDir() {
+		dr, err := transfer.NewDirReader(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		return dr.Reader, nil
+	}
+	return transfer.NewReader(ctx, path)
 }
