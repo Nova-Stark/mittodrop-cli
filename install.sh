@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Nova-Stark/mittodrop-cli/master/install.sh | bash
 set -e
 
 # Repository configuration

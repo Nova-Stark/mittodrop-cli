@@ -69,12 +69,12 @@ For complete sequence diagrams, connection state machines, and transport flowcha
 
 #### Linux & macOS
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Nova-Stark/mittodrop-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Nova-Stark/mittodrop-cli/master/install.sh | bash
 ```
 
 #### Windows (PowerShell)
 ```powershell
-irm https://raw.githubusercontent.com/Nova-Stark/mittodrop-cli/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Nova-Stark/mittodrop-cli/master/install.ps1 | iex
 ```
 
 Once installed, `mitto` is immediately available from anywhere in your terminal.

@@ -1,5 +1,5 @@
 # mitto Windows PowerShell Installer
-# Usage: irm https://raw.githubusercontent.com/Nova-Stark/mittodrop-cli/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/Nova-Stark/mittodrop-cli/master/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
