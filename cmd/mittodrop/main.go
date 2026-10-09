@@ -8,9 +8,18 @@ import (
 	"syscall"
 
 	"mittodrop/cmd/app"
+	"mittodrop/internal/version"
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-v", "--version", "version":
+			fmt.Println(version.Info())
+			return
+		}
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
