@@ -238,7 +238,7 @@ func (w *Writer) WriteChunk(chunk *Chunk) error {
 	if chunk.Offset < 0 {
 		return fmt.Errorf("transfer: chunk %d has negative offset %d", chunk.Index, chunk.Offset)
 	}
-	if w.meta.Size > 0 && chunk.Offset+int64(len(dataToWrite)) > w.meta.Size {
+	if !w.isDir && w.meta.Size > 0 && chunk.Offset+int64(len(dataToWrite)) > w.meta.Size {
 		return fmt.Errorf("transfer: chunk %d (offset %d, len %d) exceeds declared file size %d", chunk.Index, chunk.Offset, len(dataToWrite), w.meta.Size)
 	}
 

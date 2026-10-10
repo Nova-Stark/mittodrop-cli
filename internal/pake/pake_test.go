@@ -31,8 +31,8 @@ func TestGenerateCodephrase(t *testing.T) {
 
 	// RoomID extraction
 	room := RoomID(code)
-	if room != parts[0] {
-		t.Errorf("RoomID(%q) = %q, want %q", code, room, parts[0])
+	if len(room) != 16 {
+		t.Errorf("RoomID(%q) = %q, expected 16-hex length", code, room)
 	}
 }
 

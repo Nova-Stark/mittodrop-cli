@@ -89,8 +89,9 @@ func SendFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byte, 
 		reader.ReleaseChunk(chunk)
 	}
 
-	// 4. Send completion signal
-	if err := framer.WriteFrame(MsgFileDone, nil); err != nil {
+	// 4. Send completion signal with verified checksum trailer
+	finalChecksum := reader.Checksum()
+	if err := framer.WriteFrame(MsgFileDone, finalChecksum[:]); err != nil {
 		return fmt.Errorf("transport: send file done: %w", err)
 	}
 

@@ -12,13 +12,24 @@ func TestEdgeRoomID_Deterministic(t *testing.T) {
 	if r1 == "" || r1 != r2 {
 		t.Fatalf("RoomID should be non-empty and deterministic: %q vs %q", r1, r2)
 	}
-	if r1 != "42" {
-		t.Fatalf("RoomID(%q) = %q, want %q", phrase, r1, "42")
+	if len(r1) != 16 {
+		t.Fatalf("RoomID length = %d, want 16 hex chars", len(r1))
 	}
 
-	// Without hyphen, returns verbatim string
-	if RoomID("customroom") != "customroom" {
-		t.Fatalf("unexpected RoomID for non-hyphenated phrase")
+	// Trimming and case insensitivity
+	if got := RoomID("  42-APPLE-BANANA  "); got != r1 {
+		t.Fatalf("RoomID should be case-insensitive and trimmed: got %q, want %q", got, r1)
+	}
+
+	// Same prefix with different words must produce DIFFERENT rooms (no collision)
+	diffPhrase := "42-orange-grape"
+	if RoomID(diffPhrase) == r1 {
+		t.Fatalf("different phrases with same prefix collided in RoomID: %q vs %q", r1, RoomID(diffPhrase))
+	}
+
+	// Empty string produces empty room ID
+	if got := RoomID("   "); got != "" {
+		t.Fatalf("RoomID for whitespace want empty, got %q", got)
 	}
 }
 

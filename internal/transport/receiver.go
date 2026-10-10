@@ -56,9 +56,9 @@ func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byt
 		return nil, fmt.Errorf("transport: unmarshal metadata: %w", err)
 	}
 
-	// A real SHA-256 is never all zeros; the writer treats zero as "skip verification",
-	// so refuse it here to keep integrity checking mandatory on this path.
-	if meta.Checksum == ([32]byte{}) {
+	// A real SHA-256 is never all zeros; for files it must be present upfront.
+	// For on-the-fly streaming directories, it arrives in MsgFileDone trailer.
+	if meta.Checksum == ([32]byte{}) && !meta.IsDir {
 		_ = framer.WriteFrame(MsgAbort, []byte("missing checksum in metadata"))
 		return nil, errors.New("transport: metadata missing checksum")
 	}
@@ -101,6 +101,9 @@ func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byt
 		}
 
 		if mType == MsgFileDone {
+			if len(payload) == 32 {
+				copy(meta.Checksum[:], payload)
+			}
 			break
 		}
 
@@ -136,6 +139,12 @@ func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byt
 		if onProgress != nil {
 			onProgress(receivedBytes, meta.Size, idx+1, meta.TotalChunks)
 		}
+	}
+
+	// Verify whole-stream checksum was provided (either in metadata or MsgFileDone)
+	if meta.Checksum == ([32]byte{}) {
+		_ = framer.WriteFrame(MsgAbort, []byte("missing checksum in completion trailer"))
+		return nil, errors.New("transport: missing checksum in completion trailer")
 	}
 
 	// 5. Verify whole-file SHA-256 and atomically commit staging file

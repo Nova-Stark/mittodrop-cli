@@ -81,7 +81,7 @@ Every frame begins with a fixed 19-byte plaintext header:
 - **MsgType** (`1 Byte`):
   - `0x01` (`MsgFileMeta`): File or directory metadata.
   - `0x02` (`MsgChunk`): Payload data chunk.
-  - `0x03` (`MsgFileDone`): Sender has completed streaming all chunks.
+  - `0x03` (`MsgFileDone`): Sender has completed streaming all chunks (carries 32-byte SHA-256 stream trailer checksum).
   - `0x04` (`MsgFileAck`): Receiver ready signal or final SHA-256 verification ACK.
   - `0x05` (`MsgAbort`): Immediate cancellation or protocol violation.
 - **Payload Length** (`4 Bytes`): Big-endian `uint32` specifying the ciphertext length. Enforces a strict **32 MB ceiling** to prevent memory exhaustion attacks.

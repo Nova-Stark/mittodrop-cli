@@ -79,7 +79,7 @@ func TestTransfer_DirectoryRecursiveStream(t *testing.T) {
 	}
 
 	// 4. Finish and verify checksum
-	if err := writer.Finish(meta.Checksum); err != nil {
+	if err := writer.Finish(dr.Checksum()); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestTransfer_EmptyDirectoryStream(t *testing.T) {
 		dr.ReleaseChunk(chunk)
 	}
 
-	if err := writer.Finish(meta.Checksum); err != nil {
+	if err := writer.Finish(dr.Checksum()); err != nil {
 		t.Fatalf("Finish empty dir: %v", err)
 	}
 

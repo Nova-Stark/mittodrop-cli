@@ -226,6 +226,9 @@ func (r *Reader) fillLoop() {
 		n, err := io.ReadFull(r.source, rawBuf)
 		if n > 0 {
 			rawSlice := rawBuf[:n]
+			if r.hasher != nil {
+				r.hasher.Write(rawSlice)
+			}
 
 			// Compression evaluation
 			compBufPtr := r.compPool.Get().(*[]byte)
@@ -278,6 +281,11 @@ func (r *Reader) fillLoop() {
 		}
 
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			if r.hasher != nil {
+				r.mu.Lock()
+				copy(r.meta.Checksum[:], r.hasher.Sum(nil))
+				r.mu.Unlock()
+			}
 			break
 		}
 		if err != nil {
@@ -285,4 +293,20 @@ func (r *Reader) fillLoop() {
 			return
 		}
 	}
+}
+
+// Checksum returns the SHA-256 checksum of the transfer payload.
+// For files with pre-computed checksum, returns meta.Checksum.
+// For streams with on-the-fly checksum, returns the hasher digest upon completion.
+func (r *Reader) Checksum() [32]byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.meta.Checksum != ([32]byte{}) {
+		return r.meta.Checksum
+	}
+	var sum [32]byte
+	if r.hasher != nil {
+		copy(sum[:], r.hasher.Sum(nil))
+	}
+	return sum
 }

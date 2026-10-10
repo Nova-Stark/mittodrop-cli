@@ -2,7 +2,9 @@ package pake
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"strings"
@@ -47,9 +49,11 @@ func GenerateCodephrase() (string, error) {
 }
 
 func RoomID(codephrase string) string {
-	parts := strings.Split(strings.TrimSpace(codephrase), "-")
-	if len(parts) > 0 && parts[0] != "" {
-		return parts[0]
+	clean := strings.TrimSpace(strings.ToLower(codephrase))
+	if clean == "" {
+		return ""
 	}
-	return codephrase
+	sum := sha256.Sum256([]byte(clean))
+	return hex.EncodeToString(sum[:8])
 }
+

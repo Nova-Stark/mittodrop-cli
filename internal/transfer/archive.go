@@ -58,10 +58,10 @@ func NewDirReader(ctx context.Context, dirPath string, cfg ...ReaderConfig) (*Di
 		}
 	}
 
-	// 1. Calculate uncompressed TAR size and SHA-256 checksum in a dry run pass
-	totalSize, checksum, err := calculateDirTarStats(ctx, absPath)
+	// 1. Calculate uncompressed TAR size rapidly from metadata without reading file contents
+	totalSize, err := estimateDirTarSize(ctx, absPath)
 	if err != nil {
-		return nil, fmt.Errorf("transfer: calculate dir tar stats: %w", err)
+		return nil, fmt.Errorf("transfer: estimate dir tar size: %w", err)
 	}
 
 	totalChunks := uint64(totalSize / int64(config.ChunkSize))
@@ -112,7 +112,7 @@ func NewDirReader(ctx context.Context, dirPath string, cfg ...ReaderConfig) (*Di
 			Size:        totalSize,
 			Mode:        uint32(info.Mode()),
 			ModTime:     info.ModTime().UnixNano(),
-			Checksum:    checksum,
+			Checksum:    [32]byte{}, // computed on-the-fly during live streaming
 			ChunkSize:   config.ChunkSize,
 			TotalChunks: totalChunks,
 		},
@@ -146,21 +146,73 @@ func NewDirReader(ctx context.Context, dirPath string, cfg ...ReaderConfig) (*Di
 	}, nil
 }
 
-func calculateDirTarStats(ctx context.Context, rootDir string) (int64, [32]byte, error) {
-	hasher := sha256.New()
-	counter := &countingWriter{w: hasher}
-	tw := tar.NewWriter(counter)
+func estimateDirTarSize(ctx context.Context, rootDir string) (int64, error) {
+	var cw countingWriter
+	tw := tar.NewWriter(&cw)
+	baseDir := filepath.Dir(rootDir)
 
-	if err := walkAndWriteTar(ctx, rootDir, tw); err != nil {
-		return 0, [32]byte{}, err
+	var fileDataSize int64
+
+	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(baseDir, path)
+		if err != nil {
+			return err
+		}
+		tarName := filepath.ToSlash(relPath)
+
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return fmt.Errorf("tar header %q: %w", path, err)
+		}
+		header.Name = tarName
+
+		if d.IsDir() {
+			if !strings.HasSuffix(header.Name, "/") {
+				header.Name += "/"
+			}
+			header.Typeflag = tar.TypeDir
+			return tw.WriteHeader(header)
+		}
+
+		// Regular file: set size to 0 so tar.Writer only formats the header block without expecting body writes
+		fileSize := info.Size()
+		header.Typeflag = tar.TypeReg
+		header.Size = 0
+
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("write header %q: %w", path, err)
+		}
+
+		fileDataSize += fileSize
+		if rem := fileSize % 512; rem != 0 {
+			fileDataSize += 512 - rem
+		}
+
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
+
 	if err := tw.Close(); err != nil {
-		return 0, [32]byte{}, err
+		return 0, err
 	}
 
-	var sum [32]byte
-	copy(sum[:], hasher.Sum(nil))
-	return counter.count, sum, nil
+	return cw.count + fileDataSize, nil
 }
 
 type countingWriter struct {
@@ -169,8 +221,12 @@ type countingWriter struct {
 }
 
 func (cw *countingWriter) Write(p []byte) (n int, err error) {
-	n, err = cw.w.Write(p)
-	cw.count += int64(n)
+	if cw.w != nil {
+		n, err = cw.w.Write(p)
+	} else {
+		n = len(p)
+	}
+	cw.count += int64(len(p))
 	return n, err
 }
 
