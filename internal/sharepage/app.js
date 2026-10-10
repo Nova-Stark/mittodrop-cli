@@ -11,6 +11,36 @@
   const fileList = document.getElementById('file-list');
   const resetBtn = document.getElementById('reset-btn');
   const themeToggle = document.getElementById('theme-toggle');
+  const tokenInput = document.getElementById('token-input');
+  const tokenToggle = document.getElementById('token-toggle');
+  const tokenBanner = document.getElementById('token-banner');
+
+  // Load token from URL query or sessionStorage
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlToken = urlParams.get('token');
+  if (urlToken) {
+    if (tokenInput) tokenInput.value = urlToken;
+    try { sessionStorage.setItem('mittodrop-token', urlToken); } catch (_) {}
+  } else {
+    try {
+      const savedToken = sessionStorage.getItem('mittodrop-token');
+      if (savedToken && tokenInput) tokenInput.value = savedToken;
+    } catch (_) {}
+  }
+
+  if (tokenInput) {
+    tokenInput.addEventListener('input', () => {
+      try { sessionStorage.setItem('mittodrop-token', tokenInput.value.trim()); } catch (_) {}
+      if (tokenBanner) tokenBanner.style.display = 'none';
+      tokenInput.classList.remove('input-error');
+    });
+  }
+
+  if (tokenToggle && tokenInput) {
+    tokenToggle.addEventListener('click', () => {
+      tokenInput.type = tokenInput.type === 'password' ? 'text' : 'password';
+    });
+  }
 
   // Theme management
   const savedTheme = localStorage.getItem('mittodrop-theme') || 'dark';
@@ -63,6 +93,8 @@
     successBox.style.display = 'none';
     progressBox.style.display = 'none';
     dropzone.style.display = 'block';
+    if (tokenBanner) tokenBanner.style.display = 'none';
+    if (tokenInput) tokenInput.classList.remove('input-error');
   });
 
   function formatBytes(bytes) {
@@ -130,13 +162,18 @@
     return new Promise((resolve, reject) => {
       const bodyToSend = compressedBlob || file;
       const isCompressed = !!compressedBlob;
+      const currentToken = tokenInput ? tokenInput.value.trim() : (urlToken || '');
+      const uploadUrl = currentToken ? `/upload?token=${encodeURIComponent(currentToken)}` : '/upload';
 
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/upload', true);
+      xhr.open('POST', uploadUrl, true);
 
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
       xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
       xhr.setRequestHeader('X-File-Size', file.size.toString());
+      if (currentToken) {
+        xhr.setRequestHeader('X-LinkShare-Token', currentToken);
+      }
       if (checksum) {
         xhr.setRequestHeader('X-File-Checksum', checksum);
       }
@@ -175,6 +212,8 @@
 
       xhr.onload = function() {
         if (xhr.status >= 200 && xhr.status < 300) {
+          if (tokenBanner) tokenBanner.style.display = 'none';
+          if (tokenInput) tokenInput.classList.remove('input-error');
           try {
             const parsed = JSON.parse(xhr.responseText);
             resolve(parsed && parsed.length > 0 ? parsed[0] : { filename: file.name, bytes: file.size });
@@ -182,6 +221,16 @@
             resolve({ filename: file.name, bytes: file.size });
           }
         } else {
+          if (xhr.status === 401) {
+            if (tokenBanner) {
+              tokenBanner.textContent = 'Unauthorized: Invalid or missing access token. Please enter valid token above.';
+              tokenBanner.style.display = 'block';
+            }
+            if (tokenInput) {
+              tokenInput.classList.add('input-error');
+              tokenInput.focus();
+            }
+          }
           reject(new Error(xhr.responseText || `HTTP ${xhr.status}: ${xhr.statusText}`));
         }
       };
@@ -242,7 +291,10 @@
 
       showSuccess(results);
     } catch (err) {
-      alert('Upload failed: ' + err.message);
+      const is401 = err.message && (err.message.includes('401') || err.message.toLowerCase().includes('unauthorized'));
+      if (!is401) {
+        alert('Upload failed: ' + err.message);
+      }
       dropzone.style.display = 'block';
       progressBox.style.display = 'none';
     }

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -283,8 +284,7 @@ func (a *App) handleShoutInbound(
 		return
 	}
 
-	savedPath := filepath.Join(saveDir, receivedMeta.Name)
-	a.printer.PrintComplete(senderName, receivedMeta.Name, savedPath)
+	a.printReceiveComplete(senderName, receivedMeta, saveDir)
 }
 
 func (a *App) runShoutSend(ctx context.Context, cfg *cliparser.ShoutSendConfig) error {
@@ -307,9 +307,10 @@ func (a *App) runShoutSend(ctx context.Context, cfg *cliparser.ShoutSendConfig) 
 		_ = recv.Start(discCtx)
 	}()
 
-	var targetDev shout.DiscoveredDevice
+	var targetDevs []shout.DiscoveredDevice
 
 	if cfg.Target != "" {
+		var targetDev shout.DiscoveredDevice
 		if strings.Contains(cfg.Target, ":") {
 			host, portStr, splitErr := net.SplitHostPort(cfg.Target)
 			if splitErr == nil {
@@ -328,7 +329,7 @@ func (a *App) runShoutSend(ctx context.Context, cfg *cliparser.ShoutSendConfig) 
 		if targetDev.TransferPort == 0 {
 			a.printer.PrintStatus("Searching for receiver matching %q...", cfg.Target)
 			found := false
-			deadline := time.Now().Add(2500 * time.Millisecond)
+			deadline := time.Now().Add(4000 * time.Millisecond)
 
 			for time.Now().Before(deadline) {
 				for _, dev := range recv.Devices() {
@@ -350,70 +351,89 @@ func (a *App) runShoutSend(ctx context.Context, cfg *cliparser.ShoutSendConfig) 
 				return fmt.Errorf("shout: receiver %q not found on local network", cfg.Target)
 			}
 		}
+		targetDevs = append(targetDevs, targetDev)
 	} else {
-		a.printer.PrintStatus("Scanning local network for receivers (1.5s)...")
-		time.Sleep(1500 * time.Millisecond)
+		a.printer.PrintStatus("Scanning local network for receivers (3.0s)...")
+		time.Sleep(3000 * time.Millisecond)
 
 		devices := recv.Devices()
 		if len(devices) == 0 {
 			return errors.New("shout: no receivers found on local network")
 		}
 
-		if len(devices) == 1 {
-			targetDev = devices[0]
-		} else {
-			a.printer.PrintStatus("Discovered receivers:")
-			for idx, dev := range devices {
-				a.printer.PrintStatus("  [%d] %s (%s)", idx+1, dev.DeviceName, dev.Addr())
-			}
+		a.printer.PrintStatus("Discovered receivers:")
+		for idx, dev := range devices {
+			a.printer.PrintStatus("  [%d] %s (%s)", idx+1, dev.DeviceName, dev.Addr())
+		}
 
-			choiceStr := a.printer.PromptString(fmt.Sprintf("Select target [1-%d]: ", len(devices)))
-			cleanChoice := strings.TrimSpace(choiceStr)
-			num, err := strconv.Atoi(cleanChoice)
-			if err != nil || num < 1 || num > len(devices) {
-				return fmt.Errorf("shout: invalid selection %q", cleanChoice)
-			}
-			targetDev = devices[num-1]
+		promptMsg := fmt.Sprintf("Select target [1-%d, ranges like 1-2, comma-separated, or Enter for all] (default: all): ", len(devices))
+		choiceStr := a.printer.PromptString(promptMsg)
+		selectedIndices, err := parseDeviceSelection(choiceStr, len(devices))
+		if err != nil {
+			return fmt.Errorf("shout: invalid selection: %w", err)
+		}
+		for _, idx := range selectedIndices {
+			targetDevs = append(targetDevs, devices[idx])
 		}
 	}
 
-	a.printer.PrintStatus("Target selected: %s (%s)", targetDev.DeviceName, targetDev.Addr())
-
 	batchID, _ := utils.GenerateSessionID()
 	totalFiles := len(cfg.Files)
+	var hasFailure bool
 
-	for idx, filePath := range cfg.Files {
-		fileBase := filepath.Base(filePath)
-		a.printer.PrintStatus("Sending [%d/%d] %s...", idx+1, totalFiles, fileBase)
-
-		reader, err := newTransferReader(ctx, filePath)
-		if err != nil {
-			a.printer.PrintWarn("Failed to read file %s: %v", fileBase, err)
-			continue
+	for devIdx, targetDev := range targetDevs {
+		if len(targetDevs) > 1 {
+			a.printer.PrintStatus("=== Target [%d/%d]: %s (%s) ===", devIdx+1, len(targetDevs), targetDev.DeviceName, targetDev.Addr())
+		} else {
+			a.printer.PrintStatus("Target selected: %s (%s)", targetDev.DeviceName, targetDev.Addr())
 		}
 
-		reader.SetTransferInfo(id.DeviceName, cfg.Token, batchID, idx+1, totalFiles)
+		var targetFailed bool
+		for idx, filePath := range cfg.Files {
+			fileBase := filepath.Base(filePath)
+			a.printer.PrintStatus("Sending [%d/%d] %s...", idx+1, totalFiles, fileBase)
 
-		conn, err := shout.ConnectToDevice(ctx, targetDev, "mittodrop-lan-v1", id)
-		if err != nil {
+			reader, err := newTransferReader(ctx, filePath)
+			if err != nil {
+				a.printer.PrintWarn("Failed to read file %s: %v", fileBase, err)
+				targetFailed = true
+				break
+			}
+
+			reader.SetTransferInfo(id.DeviceName, cfg.Token, batchID, idx+1, totalFiles)
+
+			conn, err := shout.ConnectToDevice(ctx, targetDev, "mittodrop-lan-v1", id)
+			if err != nil {
+				reader.Close()
+				a.printer.PrintWarn("Connect to %s failed: %v", targetDev.DeviceName, err)
+				targetFailed = true
+				break
+			}
+
+			tracker := ui.NewTracker(fileBase, targetDev.DeviceName)
+			err = transport.SendFile(ctx, conn, reader, func(curr, tot int64, curChunk, totChunks uint64) {
+				snap := tracker.Update(curr, tot, curChunk, totChunks)
+				a.printer.PrintSnapshot(snap)
+			})
+			conn.Close()
 			reader.Close()
-			return fmt.Errorf("shout: connect to %s failed: %w", targetDev.DeviceName, err)
+
+			if err != nil {
+				a.printer.PrintWarn("Transfer failed for %s to %s: %v", fileBase, targetDev.DeviceName, err)
+				targetFailed = true
+				break
+			}
+
+			a.printer.PrintComplete("", fileBase, targetDev.DeviceName)
 		}
 
-		tracker := ui.NewTracker(fileBase, targetDev.DeviceName)
-		err = transport.SendFile(ctx, conn, reader, func(curr, tot int64, curChunk, totChunks uint64) {
-			snap := tracker.Update(curr, tot, curChunk, totChunks)
-			a.printer.PrintSnapshot(snap)
-		})
-		conn.Close()
-		reader.Close()
-
-		if err != nil {
-			a.printer.PrintWarn("Transfer failed for %s: %v", fileBase, err)
-			return err
+		if targetFailed {
+			hasFailure = true
 		}
+	}
 
-		a.printer.PrintComplete("", fileBase, targetDev.DeviceName)
+	if hasFailure {
+		return errors.New("one or more transfers encountered errors")
 	}
 
 	a.printer.PrintStatus("All transfers completed successfully.")
@@ -494,8 +514,20 @@ func (a *App) runLinkShareSend(ctx context.Context, cfg *cliparser.LinkShareSend
 			Identity: id,
 		})
 		if err != nil {
-			a.printer.PrintWarn("Failed to connect to %s: %v", target.URL, err)
-			continue
+			if strings.Contains(err.Error(), "status 401") {
+				a.printer.PrintWarn("Receiver at %s requires an access token.", target.URL)
+				promptToken := a.printer.PromptString(fmt.Sprintf("Enter access token for %s: ", target.URL))
+				if promptToken != "" {
+					session, err = linkshare.Connect(ctx, target.URL, linkshare.ClientConfig{
+						Token:    promptToken,
+						Identity: id,
+					})
+				}
+			}
+			if err != nil {
+				a.printer.PrintWarn("Failed to connect to %s: %v", target.URL, err)
+				continue
+			}
 		}
 
 		targetLabel := session.Receiver.DeviceName
@@ -702,9 +734,7 @@ func (a *App) handleOtinInbound(ctx context.Context, netConn net.Conn, codephras
 			a.printer.PrintWarn("Transfer error from %s: %v", senderName, err)
 			return
 		}
-
-		savedPath := filepath.Join(saveDir, receivedMeta.Name)
-		a.printer.PrintComplete(senderName, receivedMeta.Name, savedPath)
+		a.printReceiveComplete(senderName, receivedMeta, saveDir)
 	}
 }
 
@@ -985,8 +1015,7 @@ func (a *App) handleDirectInbound(ctx context.Context, netConn net.Conn, session
 			return
 		}
 
-		savedPath := filepath.Join(saveDir, receivedMeta.Name)
-		a.printer.PrintComplete(senderName, receivedMeta.Name, savedPath)
+		a.printReceiveComplete(senderName, receivedMeta, saveDir)
 	}
 }
 
@@ -1156,4 +1185,93 @@ func newTransferReader(ctx context.Context, path string) (*transfer.Reader, erro
 		return dr.Reader, nil
 	}
 	return transfer.NewReader(ctx, path)
+}
+
+func (a *App) printReceiveComplete(senderName string, meta *transfer.FileMetadata, saveDir string) {
+	if meta == nil {
+		return
+	}
+	savedPath := meta.SavedPath
+	if savedPath == "" {
+		savedPath = filepath.Join(saveDir, meta.Name)
+	}
+	if meta.IsDuplicate {
+		a.printer.PrintStatus("File already exists with matching checksum; skipped duplicate: %s", savedPath)
+	} else {
+		if meta.IsRenamed {
+			a.printer.PrintStatus("File collision detected; saved as %s", meta.Name)
+		}
+		a.printer.PrintComplete(senderName, meta.Name, savedPath)
+	}
+}
+
+// parseDeviceSelection parses comma-separated, hyphen-ranged, and broadcast target selections.
+// An empty input, "a", or "all" selects all available devices [0..total-1].
+func parseDeviceSelection(input string, total int) ([]int, error) {
+	if total <= 0 {
+		return nil, errors.New("no devices available")
+	}
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" || strings.EqualFold(trimmed, "a") || strings.EqualFold(trimmed, "all") {
+		indices := make([]int, total)
+		for i := 0; i < total; i++ {
+			indices[i] = i
+		}
+		return indices, nil
+	}
+
+	seen := make(map[int]bool)
+	var result []int
+
+	parts := strings.Split(trimmed, ",")
+	for _, part := range parts {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+
+		if strings.Contains(p, "-") {
+			rangeParts := strings.Split(p, "-")
+			if len(rangeParts) != 2 {
+				return nil, fmt.Errorf("invalid range expression %q", p)
+			}
+			startStr := strings.TrimSpace(rangeParts[0])
+			endStr := strings.TrimSpace(rangeParts[1])
+			start, err1 := strconv.Atoi(startStr)
+			end, err2 := strconv.Atoi(endStr)
+			if err1 != nil || err2 != nil {
+				return nil, fmt.Errorf("invalid range numbers in %q", p)
+			}
+			if start < 1 || start > total || end < 1 || end > total || start > end {
+				return nil, fmt.Errorf("range %q out of bounds [1-%d]", p, total)
+			}
+			for idx := start; idx <= end; idx++ {
+				zeroIdx := idx - 1
+				if !seen[zeroIdx] {
+					seen[zeroIdx] = true
+					result = append(result, zeroIdx)
+				}
+			}
+		} else {
+			idx, err := strconv.Atoi(p)
+			if err != nil {
+				return nil, fmt.Errorf("invalid target number %q", p)
+			}
+			if idx < 1 || idx > total {
+				return nil, fmt.Errorf("target number %d out of bounds [1-%d]", idx, total)
+			}
+			zeroIdx := idx - 1
+			if !seen[zeroIdx] {
+				seen[zeroIdx] = true
+				result = append(result, zeroIdx)
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, errors.New("no valid targets selected")
+	}
+
+	sort.Ints(result)
+	return result, nil
 }

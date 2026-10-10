@@ -374,3 +374,36 @@ func TestTransfer_CollisionAndDisambiguation(t *testing.T) {
 		t.Fatalf("expected redundant file %q to NOT exist", redundantPath)
 	}
 }
+
+func TestTransfer_ChunkDataPoolRecycling(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "pool_test.txt")
+	testData := bytes.Repeat([]byte("mittodrop chunk pool recycling test line\n"), 1000)
+	if err := os.WriteFile(filePath, testData, 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	ctx := context.Background()
+	r, err := transfer.NewReader(ctx, filePath, transfer.ReaderConfig{ChunkSize: 1024})
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	chunk, err := r.NextChunk()
+	if err != nil {
+		t.Fatalf("NextChunk: %v", err)
+	}
+	if chunk == nil || len(chunk.Data) == 0 {
+		t.Fatal("expected non-empty chunk data")
+	}
+
+	// ReleaseChunk should recycle buffer and clear c.Data
+	r.ReleaseChunk(chunk)
+	if chunk.Data != nil {
+		t.Errorf("expected chunk.Data to be cleared to nil on release, got %v", chunk.Data)
+	}
+
+	// Calling ReleaseChunk again on same chunk should be a safe no-op
+	r.ReleaseChunk(chunk)
+}

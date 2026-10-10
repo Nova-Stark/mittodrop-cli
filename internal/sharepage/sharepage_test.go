@@ -39,4 +39,23 @@ func TestRender(t *testing.T) {
 	if !strings.Contains(html, "id=\"success-box\"") {
 		t.Errorf("expected success card in rendered HTML")
 	}
+
+	// Check token UI elements exist
+	if !strings.Contains(html, "id=\"token-input\"") {
+		t.Errorf("expected token input in rendered HTML")
+	}
+	if !strings.Contains(html, "id=\"token-toggle\"") {
+		t.Errorf("expected token toggle button in rendered HTML")
+	}
+	if !strings.Contains(html, "id=\"token-banner\"") {
+		t.Errorf("expected token error banner in rendered HTML")
+	}
+
+	// Check token handling in JS
+	if !strings.Contains(html, "X-LinkShare-Token") {
+		t.Errorf("expected X-LinkShare-Token header in script")
+	}
+	if !strings.Contains(html, "mittodrop-token") {
+		t.Errorf("expected sessionStorage token cache in script")
+	}
 }

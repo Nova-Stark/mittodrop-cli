@@ -43,6 +43,8 @@ type Writer struct {
 	mu          sync.Mutex
 	finished    bool
 	closed      bool
+	isDuplicate bool
+	isRenamed   bool
 
 	// Streaming TAR extraction fields (for IsDir == true)
 	isDir       bool
@@ -178,6 +180,20 @@ func (w *Writer) TargetPath() string {
 // StagingPath returns the current active temporary staging file path.
 func (w *Writer) StagingPath() string {
 	return w.stagingPath
+}
+
+// IsDuplicate returns true if the incoming file matched an existing identical file and was deduplicated.
+func (w *Writer) IsDuplicate() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.isDuplicate
+}
+
+// IsRenamed returns true if the incoming file collided with an existing file and was auto-disambiguated.
+func (w *Writer) IsRenamed() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.isRenamed
 }
 
 // WriteChunk decompresses (if necessary) and writes the chunk payload at its exact offset.
@@ -322,6 +338,7 @@ func (w *Writer) Finish(expectedChecksum [32]byte) error {
 				if hashErr == nil && bytes.Equal(existingSum[:], computedChecksum[:]) {
 					// Identical file already exists on disk; clean up staging file
 					_ = os.Remove(w.stagingPath)
+					w.isDuplicate = true
 					return nil
 				}
 			}
@@ -333,6 +350,7 @@ func (w *Writer) Finish(expectedChecksum [32]byte) error {
 				candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
 				if _, err := os.Stat(candidate); os.IsNotExist(err) {
 					finalPath = candidate
+					w.isRenamed = true
 					break
 				}
 			}

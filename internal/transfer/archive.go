@@ -128,6 +128,12 @@ func NewDirReader(ctx context.Context, dirPath string, cfg ...ReaderConfig) (*Di
 				return &b
 			},
 		},
+		dataPool: sync.Pool{
+			New: func() any {
+				b := make([]byte, config.ChunkSize+1024)
+				return &b
+			},
+		},
 	}
 
 	go r.fillLoop()

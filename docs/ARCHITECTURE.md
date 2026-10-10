@@ -66,10 +66,10 @@ Welcome to the internal system architecture documentation for `mittodrop`. This 
 
 ### 2.2 LinkShare (`linkshare serve` / `linkshare send`)
 - **Use Case**: Frictionless cross-device transfers between a terminal and **any web browser** (desktop, iPhone, Android) on the LAN.
-- **Embedded Web UI**: Serves a modern responsive web interface (`internal/sharepage`) directly from memory.
+- **Embedded Web UI**: Serves a modern responsive web interface (`internal/sharepage`) directly from memory with in-page access token authorization, theme switching, and real-time upload progress.
 - **Client-Side Web Crypto**: Mobile and desktop browsers compute SHA-256 hashes using the browser's native Web Crypto API (`crypto.subtle.digest`) before uploading.
 - **In-Browser Compression**: Uses native `CompressionStream('gzip')` in JavaScript to compress compressible payloads before transmitting over HTTP/WebSocket.
-- **CLI Receiver**: Automatically downloads or streams incoming files with token authentication.
+- **CLI Receiver & Sender**: Automatically receives files with token authentication; CLI sender prompts interactively for access tokens when connecting to token-protected receivers.
 
 ### 2.3 Manual / Direct P2P (`direct send` / `direct rec`)
 - **Use Case**: High-speed point-to-point transfers over direct IP connections without third-party servers.

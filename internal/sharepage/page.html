@@ -31,9 +31,24 @@
     </div>
 
     <div class="peer-info">
-      <span class="peer-label">Sending to Receiver</span>
-      <span class="peer-name">{{ .DeviceName }}</span>
+      <div class="peer-meta">
+        <span class="peer-label">Sending to Receiver</span>
+        <span class="peer-name">{{ .DeviceName }}</span>
+      </div>
+      <div class="token-group">
+        <label for="token-input" class="token-label">Access Token</label>
+        <div class="token-wrapper">
+          <input type="password" id="token-input" class="token-input" placeholder="Enter token (if required)..." autocomplete="off" />
+          <button type="button" id="token-toggle" class="token-toggle" title="Show/Hide Token" aria-label="Toggle token visibility">
+            <svg id="eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
+    <div id="token-banner" class="token-banner" style="display:none;"></div>
 
     <!-- Dropzone Area -->
     <div id="dropzone" class="dropzone">

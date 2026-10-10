@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"time"
 
 	"mittodrop/internal/conn"
@@ -147,6 +148,11 @@ func ReceiveFileStream(ctx context.Context, netConn net.Conn, sessionKey [32]byt
 	if err := framer.WriteFrame(MsgFileAck, nil); err != nil {
 		return nil, fmt.Errorf("transport: send final ack: %w", err)
 	}
+
+	meta.Name = filepath.Base(writer.TargetPath())
+	meta.SavedPath = writer.TargetPath()
+	meta.IsDuplicate = writer.IsDuplicate()
+	meta.IsRenamed = writer.IsRenamed()
 
 	return &meta, nil
 }

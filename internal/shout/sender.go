@@ -11,7 +11,7 @@ import (
 	"mittodrop/internal/utils"
 )
 
-const DefaultShoutInterval = 2500 * time.Millisecond
+const DefaultShoutInterval = 1500 * time.Millisecond
 
 type SenderConfig struct {
 	Identity     utils.PeerIdentity

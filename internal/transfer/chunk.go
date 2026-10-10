@@ -38,6 +38,9 @@ type FileMetadata struct {
 	BatchID     string   `json:"batch_id,omitempty"`     // Identifier for multi-file batch
 	BatchIndex  int      `json:"batch_index,omitempty"`  // Index in batch (1-based)
 	BatchTotal  int      `json:"batch_total,omitempty"`  // Total files in batch
+	SavedPath   string   `json:"saved_path,omitempty"`   // Resolved path saved on receiver disk
+	IsDuplicate bool     `json:"is_duplicate,omitempty"` // True if file matched existing file and was deduplicated
+	IsRenamed   bool     `json:"is_renamed,omitempty"`   // True if file collided with different content and was renamed
 }
 
 // CalculateChecksum computes the SHA-256 checksum of an open file.

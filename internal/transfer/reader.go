@@ -33,6 +33,7 @@ type Reader struct {
 	cancel    context.CancelFunc
 	rawPool   sync.Pool
 	compPool  sync.Pool
+	dataPool  sync.Pool
 	mu        sync.Mutex
 	closed    bool
 }
@@ -125,6 +126,12 @@ func NewReader(ctx context.Context, filePath string, cfg ...ReaderConfig) (*Read
 				return &b
 			},
 		},
+		dataPool: sync.Pool{
+			New: func() any {
+				b := make([]byte, config.ChunkSize+1024)
+				return &b
+			},
+		},
 	}
 
 	go r.fillLoop()
@@ -176,10 +183,11 @@ func (r *Reader) ReleaseChunk(c *Chunk) {
 	if c == nil || c.Data == nil {
 		return
 	}
-	// Buffers allocated from pools are recycled if capacities match
+	// Buffers allocated from dataPool are recycled if capacities match
 	if cap(c.Data) >= int(r.cfg.ChunkSize) {
 		b := c.Data[:0]
-		r.compPool.Put(&b)
+		r.dataPool.Put(&b)
+		c.Data = nil
 	}
 }
 
@@ -224,19 +232,22 @@ func (r *Reader) fillLoop() {
 			compBuf := *compBufPtr
 			compressed := r.encoder.EncodeAll(rawSlice, compBuf[:0])
 
+			dataBufPtr := r.dataPool.Get().(*[]byte)
+			dataBuf := *dataBufPtr
+
 			var chunkData []byte
 			var isCompressed bool
 			var compSize uint32
 
 			if float64(len(compressed)) < CompressionThreshold*float64(len(rawSlice)) {
 				// 5%+ savings: send compressed chunk
-				chunkData = make([]byte, len(compressed))
+				chunkData = dataBuf[:len(compressed)]
 				copy(chunkData, compressed)
 				isCompressed = true
 				compSize = uint32(len(compressed))
 			} else {
 				// Incompressible: send raw chunk
-				chunkData = make([]byte, n)
+				chunkData = dataBuf[:n]
 				copy(chunkData, rawSlice)
 				isCompressed = false
 				compSize = uint32(n)

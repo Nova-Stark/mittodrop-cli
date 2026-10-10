@@ -176,6 +176,9 @@ The compiled binary will be placed in `bin/mittodrop` (or `bin/mittodrop.exe` on
 | `-t` | `--token` | `<string>` | Authorization token matching receiver | *(None)* |
 | `-f` | `--file`, `--files` | `<path...>` | Paths to send (or trailing positional args) | — |
 
+> [!TIP]
+> When running `mitto send` without `-u`, an interactive prompt lists all discovered peers on the LAN. You can select multiple receivers using comma-separated numbers (e.g. `1, 3`), contiguous ranges (e.g. `1-4`), or simply press **Enter** to broadcast to all discovered receivers.
+
 ---
 
 ### Method 3: LinkShare Browser & CLI Portal (`mitto linkshare`)
@@ -195,6 +198,11 @@ The compiled binary will be placed in `bin/mittodrop` (or `bin/mittodrop.exe` on
 | `-c` | `--compress` | `<algorithm>`| Compression mode: `zstd`, `gzip`, or `none` | `zstd` |
 | `-f` | `--files` | `<path...>` | Paths to upload (or trailing positional args) | — |
 | | `-uf` | `<"url f1 f2">`| Combined destination URL and file bundle string | — |
+
+> [!TIP]
+> **LinkShare Token Authentication**:
+> - **Web Browser**: Access tokens can be passed via the link (`?token=xyz`) or typed directly into the **Access Token** field in the browser UI. Entered tokens are saved in `sessionStorage` for convenient repeat transfers.
+> - **CLI Sender**: If `-t` is omitted and the URL has no `?token=` parameter, `mitto linkshare send` will prompt for the access token interactively upon connecting to a token-protected receiver.
 
 ---
 

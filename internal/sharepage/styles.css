@@ -115,8 +115,16 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 0.75rem 1rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
   font-size: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.peer-meta {
+  display: flex;
+  flex-direction: column;
 }
 
 .peer-label {
@@ -132,6 +140,76 @@ body {
   font-family: var(--font-mono);
   font-weight: 600;
   color: var(--accent-go);
+}
+
+.token-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.token-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.token-wrapper {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.token-input {
+  width: 100%;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 0.45rem 2.2rem 0.45rem 0.65rem;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.token-input:focus {
+  border-color: var(--accent-go);
+  box-shadow: 0 0 0 2px rgba(0, 173, 216, 0.2);
+}
+
+.token-input.input-error {
+  border-color: var(--error-color);
+  box-shadow: 0 0 0 2px rgba(241, 76, 76, 0.25);
+}
+
+.token-toggle {
+  position: absolute;
+  right: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+}
+
+.token-toggle:hover {
+  color: var(--text-main);
+}
+
+.token-banner {
+  background: rgba(241, 76, 76, 0.12);
+  border: 1px solid var(--error-color);
+  color: var(--error-color);
+  font-size: 0.82rem;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin-top: -0.75rem;
+  margin-bottom: 1.25rem;
 }
 
 /* Dropzone */

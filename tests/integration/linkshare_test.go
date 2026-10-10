@@ -194,3 +194,89 @@ func TestIntegration_LinkShare_NodeToNodeEncryptedTransfer(t *testing.T) {
 		t.Fatalf("SHA-256 hash mismatch! got %x, want %x", destSum, srcSum)
 	}
 }
+
+func TestIntegration_LinkShare_TokenProtectedBrowserAndCLI(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "linkshare-token-integ-*")
+	if err != nil {
+		t.Fatalf("tempDir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	expectedToken := "securetok789"
+	rcv, err := linkshare.NewReceiver(linkshare.ReceiverConfig{
+		DeviceID:     "tok-target-id",
+		DeviceName:   "tok-receiver",
+		SessionID:    "tok-sess",
+		SaveDir:      tempDir,
+		Port:         0,
+		Token:        expectedToken,
+		RequireToken: true,
+	})
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = rcv.Start(ctx) }()
+
+	select {
+	case <-rcv.Ready():
+	case <-time.After(3 * time.Second):
+		t.Fatal("receiver failed to start")
+	}
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", rcv.Port())
+
+	// 1. Unauthenticated upload must be rejected with 401
+	unauthReq, _ := http.NewRequest(http.MethodPost, baseURL+"/upload", strings.NewReader("sample data"))
+	unauthReq.Header.Set("Content-Type", "application/octet-stream")
+	unauthReq.Header.Set("X-File-Name", "unauth.txt")
+	unauthResp, err := http.DefaultClient.Do(unauthReq)
+	if err != nil {
+		t.Fatalf("unauth req: %v", err)
+	}
+	unauthResp.Body.Close()
+	if unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 for unauthenticated upload, got %d", unauthResp.StatusCode)
+	}
+
+	// 2. Upload with X-LinkShare-Token header must succeed
+	headerReq, _ := http.NewRequest(http.MethodPost, baseURL+"/upload", strings.NewReader("header authenticated payload"))
+	headerReq.Header.Set("Content-Type", "application/octet-stream")
+	headerReq.Header.Set("X-File-Name", "header_auth.txt")
+	headerReq.Header.Set("X-LinkShare-Token", expectedToken)
+	headerResp, err := http.DefaultClient.Do(headerReq)
+	if err != nil {
+		t.Fatalf("header req: %v", err)
+	}
+	headerResp.Body.Close()
+	if headerResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 for header token upload, got %d", headerResp.StatusCode)
+	}
+
+	// 3. Upload with ?token= query parameter must succeed
+	queryReq, _ := http.NewRequest(http.MethodPost, baseURL+"/upload?token="+expectedToken, strings.NewReader("query authenticated payload"))
+	queryReq.Header.Set("Content-Type", "application/octet-stream")
+	queryReq.Header.Set("X-File-Name", "query_auth.txt")
+	queryResp, err := http.DefaultClient.Do(queryReq)
+	if err != nil {
+		t.Fatalf("query req: %v", err)
+	}
+	queryResp.Body.Close()
+	if queryResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 for query token upload, got %d", queryResp.StatusCode)
+	}
+
+	// 4. CLI Connect with token must succeed
+	session, err := linkshare.Connect(ctx, baseURL, linkshare.ClientConfig{
+		Token: expectedToken,
+	})
+	if err != nil {
+		t.Fatalf("CLI Connect with token failed: %v", err)
+	}
+	if session.Token != expectedToken {
+		t.Errorf("session token mismatch: got %q, want %q", session.Token, expectedToken)
+	}
+}

@@ -20,7 +20,7 @@ func TestNewSender_Validation(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "valid defaults to 2500ms",
+			name:    "valid defaults to 1500ms",
 			modify:  func(cfg *SenderConfig) {},
 			wantErr: false,
 		},

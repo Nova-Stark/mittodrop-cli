@@ -372,3 +372,130 @@ func TestTransport_ContextCancel(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestTransport_CollisionDisambiguationAndDedup(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// 1. Create pre-existing file.txt in dstDir
+	existingPath := filepath.Join(dstDir, "report.txt")
+	if err := os.WriteFile(existingPath, []byte("existing version A"), 0644); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+
+	// 2. Create source file with DIFFERENT content
+	srcPath := filepath.Join(srcDir, "report.txt")
+	contentB := []byte("new incoming version B (different)")
+	if err := os.WriteFile(srcPath, contentB, 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	var sessionKey [32]byte
+	_, _ = io.ReadFull(rand.Reader, sessionKey[:])
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var receivedMeta *transfer.FileMetadata
+	var sendErr, recvErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		reader, err := transfer.NewReader(ctx, srcPath)
+		if err != nil {
+			sendErr = err
+			return
+		}
+		defer reader.Close()
+		sendErr = transport.SendFileStream(ctx, clientConn, sessionKey, reader, nil)
+	}()
+
+	go func() {
+		defer wg.Done()
+		receivedMeta, recvErr = transport.ReceiveFileStream(ctx, serverConn, sessionKey, dstDir, nil)
+	}()
+
+	wg.Wait()
+
+	if sendErr != nil {
+		t.Fatalf("SendFileStream error: %v", sendErr)
+	}
+	if recvErr != nil {
+		t.Fatalf("ReceiveFileStream error: %v", recvErr)
+	}
+
+	if receivedMeta == nil {
+		t.Fatal("receivedMeta is nil")
+	}
+
+	// Should be auto-disambiguated
+	if !receivedMeta.IsRenamed {
+		t.Errorf("expected IsRenamed to be true, got false")
+	}
+	if receivedMeta.IsDuplicate {
+		t.Errorf("expected IsDuplicate to be false, got true")
+	}
+	if receivedMeta.Name != "report (1).txt" {
+		t.Errorf("expected Name to be %q, got %q", "report (1).txt", receivedMeta.Name)
+	}
+
+	// Check disk files: original must exist untouched
+	origContent, err := os.ReadFile(existingPath)
+	if err != nil || string(origContent) != "existing version A" {
+		t.Fatalf("original file altered or missing: %v", err)
+	}
+
+	renamedPath := filepath.Join(dstDir, "report (1).txt")
+	renamedContent, err := os.ReadFile(renamedPath)
+	if err != nil || !bytes.Equal(renamedContent, contentB) {
+		t.Fatalf("renamed file missing or content mismatch: %v", err)
+	}
+
+	// 3. Dedup test: send contentB again targeting report (1).txt
+	cConn2, sConn2 := net.Pipe()
+	defer cConn2.Close()
+	defer sConn2.Close()
+
+	srcPath2 := filepath.Join(srcDir, "report (1).txt")
+	if err := os.WriteFile(srcPath2, contentB, 0644); err != nil {
+		t.Fatalf("write src2: %v", err)
+	}
+
+	var receivedMeta2 *transfer.FileMetadata
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		reader, err := transfer.NewReader(ctx, srcPath2)
+		if err != nil {
+			sendErr = err
+			return
+		}
+		defer reader.Close()
+		sendErr = transport.SendFileStream(ctx, cConn2, sessionKey, reader, nil)
+	}()
+
+	go func() {
+		defer wg.Done()
+		receivedMeta2, recvErr = transport.ReceiveFileStream(ctx, sConn2, sessionKey, dstDir, nil)
+	}()
+
+	wg.Wait()
+
+	if sendErr != nil {
+		t.Fatalf("SendFileStream dedup error: %v", sendErr)
+	}
+	if recvErr != nil {
+		t.Fatalf("ReceiveFileStream dedup error: %v", recvErr)
+	}
+
+	if !receivedMeta2.IsDuplicate {
+		t.Errorf("expected IsDuplicate to be true for matching file, got false")
+	}
+}
